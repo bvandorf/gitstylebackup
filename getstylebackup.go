@@ -12,6 +12,7 @@ import (
 	"strings"
 	"crypto/sha1"
 	"bufio"
+	"strconv"
 )
 
 var usageStr = `
@@ -168,22 +169,20 @@ func writeConfig(path string, cfg Config) (error) {
 
 type bdb struct {
 	Inuse bool
-	Versions []bdb_version
+	Version map[string]bdb_version
 }
 
 type bdb_version struct {
 	Number int
-	Dir []bdb_version_dir
+	File map[string]bdb_version_file
+	Hash []byte
 }
 
-type bdb_version_dir struct {
-	Path string
-	Files []bdb_version_dir_file
-}
-
-type bdb_version_dir_file struct {
+type bdb_version_file struct {
 	Name string
 	Hash []byte
+	deleteed bool `json:"-"`
+	dirty bool `json:"-"`
 }
 
 func readDB(path string) (bdb, error) {
@@ -220,16 +219,6 @@ func writeDB(path string, db bdb) (error) {
 	return nil
 }
 
-type tempFile struct {
-	path map[string]tempFilePros
-}
-
-type tempFilePros struct {
-	hash []byte
-	dirty bool
-	deleted bool
-}
-
 var hasher = sha1.New()
 
 func hashFile(path string) ([]byte, error) {
@@ -248,6 +237,22 @@ func hashFile(path string) ([]byte, error) {
 	}
 	
 	return hasher.Sum(nil), nil
+}
+
+func appendHash(b, a []byte) ([]byte) {
+	hasher.Reset()
+	
+	lena := len(a)
+	c := make([]byte , lena+len(b))
+	for i,v := range a {
+		c[i] = v
+	}
+	for i,v := range b {
+		c[lena + i] = v
+	}
+	
+	hasher.Write(c)
+	return hasher.Sum(nil)
 }
 
 func testEq(a, b []byte) (bool) {
@@ -275,8 +280,8 @@ func testEq(a, b []byte) (bool) {
 func BackupFiles(cfg Config) (error) {
 	var db = bdb{}
 	
-	var dbFilePath = strings.TrimRight(cfg.BackupDir, "\\")
-	dbFilePath += "\\backup.db"
+	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	var dbFilePath = dbBackupFolder + "\\backup.db"
 	
 	//look for backup db
 	exists, err := FileExists(dbFilePath)
@@ -300,31 +305,37 @@ func BackupFiles(cfg Config) (error) {
 	
 	//find oldest version number
 	var dbVersionNumber = 0
-	var dbVersionIndex = -1
-	for i,v := range db.Versions {
+	for _,v := range db.Version {
 		if dbVersionNumber < v.Number {
 			dbVersionNumber = v.Number
-			dbVersionIndex = i
 		}
 	}
 	
-	var tempFileList = tempFile{}
-	tempFileList.path = map[string]tempFilePros{}
-	var tempFileListProp = tempFilePros{}
+	var sdbVersionNumber = strconv.Itoa(dbVersionNumber)
+	var sdbNewVersionNumber = strconv.Itoa(dbVersionNumber + 1)
 	
-	if dbVersionIndex >= 0 {
+	var tempDB = bdb_version{}
+	tempDB.Number = dbVersionNumber + 1
+	tempDB.File = map[string]bdb_version_file{}
+	var tempDBFile = bdb_version_file{}
+	
+	if dbVersionNumber > 0 {
 		//read all files and hashes to temp list for oldest version number
-		for _,d := range db.Versions[dbVersionNumber].Dir {
-			for _,f := range d.Files {
-				tempFileListProp.deleted = true
-				tempFileListProp.dirty = false
-				tempFileListProp.hash = f.Hash
-				tempFileList.path[d.Path + "/" + f.Name] = tempFileListProp
-			}
+		for _,f := range db.Version[sdbVersionNumber].File {
+			tempDBFile.deleteed = true
+			tempDBFile.dirty = false
+			tempDBFile.Name = f.Name
+			tempDBFile.Hash = f.Hash
+			
+			tempDB.File[f.Name] = tempDBFile
+			tempDB.Hash = appendHash(tempDB.Hash, tempDBFile.Hash)
 		}
+	} else {
+		db.Version = map[string]bdb_version{}
 	}
 	
 	//run thru each dir/file in include config
+	versionHash := []byte{}
 	for _,cd := range cfg.Include {
 		//check if dir in config is valid
 		exists, err := FolderExists(cd)
@@ -334,47 +345,75 @@ func BackupFiles(cfg Config) (error) {
 			if err == nil {
 				for _,f := range files {
 					//file in folder
-					tempFileListProp = tempFileList.path[f]
+					tempDBFile = tempDB.File[f]
 					
-					tempFileListProp.deleted = false
+					tempDBFile.deleteed = false
 					newHash, err := hashFile(f)
 					if err == nil {
-						if !testEq(tempFileListProp.hash, newHash) {
-							tempFileListProp.dirty = true
-							tempFileListProp.hash = newHash
+						if !testEq(tempDBFile.Hash, newHash) {
+							tempDBFile.Name = f
+							tempDBFile.dirty = true
+							tempDBFile.Hash = newHash
 						}
+						versionHash = appendHash(versionHash, newHash)
+						tempDB.File[f] = tempDBFile
 					} else {
 						fmt.Println("Error Hashing " + f)
 					}
-					tempFileList.path[f] = tempFileListProp
+					tempDB.File[f] = tempDBFile
 				}
 			} else {
 				fmt.Println("Error Getting Files From " + cd)				
 			}
 		} else if (exists == true && err != nil) {
 			//backup file
-			tempFileListProp = tempFileList.path[cd]
+			tempDBFile = tempDB.File[cd]
 			
-			tempFileListProp.deleted = false
+			tempDBFile.deleteed = false
 			newHash, err := hashFile(cd)
 			if err == nil {
-				if !testEq(tempFileListProp.hash, newHash) {
-					tempFileListProp.dirty = true
-					tempFileListProp.hash = newHash
+				if !testEq(tempDBFile.Hash, newHash) {
+					tempDBFile.Name = cd
+					tempDBFile.dirty = true
+					tempDBFile.Hash = newHash
 				}
+				versionHash = appendHash(versionHash, newHash)
+				tempDBFile.Hash = newHash
+				tempDB.File[cd] = tempDBFile
 			} else {
 				fmt.Println("Error Hashing " + cd)
 			}
 		}
 	}
-	
-	for key,val := range tempFileList.path {
-		fmt.Println(key + " -> ", val.hash)
-	}
+	tempDB.Hash = versionHash
 	
 	//copy new and updateed file to dest dir
+	for key,val := range tempDB.File {
+		if val.dirty {
+			fmt.Println("UPDATE: " + key + " -> ", val.Hash)
+			err := CopyFile(val.Name, dbBackupFolder + "\\" + hashToFileName(val.Hash))
+			if err != nil {
+				fmt.Println("Error Copying File " + err.Error())
+			}
+		}
+		if val.deleteed {
+			fmt.Println("DELETE: " + key + " -> ", val.Hash)
+			delete(tempDB.File, key)
+		}
+	}
 	
 	//update db and remove inuse flag
+	newVersion := bdb_version{}
+	newVersion.Number = tempDB.Number
+	newVersion.File = tempDB.File
+	newVersion.Hash = tempDB.Hash
+	
+	db.Version[sdbNewVersionNumber] = newVersion
+	
+	writeDB(dbFilePath, db) 
+	if err != nil {
+		return err
+	}
 	
 	return nil	
 }
@@ -385,6 +424,14 @@ func TrimFiles(cfg Config) (error) {
 
 func FixFiles(cfg Config) (error) {
 	return nil	
+}
+
+func hashToFileName(hash []byte) (string) {
+	name := ""
+	for _,v := range hash {
+		name += strconv.Itoa(int(v))
+	}
+	return name
 }
 
 func buildListOfFiles(dir string) ([]string, error) {
@@ -406,6 +453,29 @@ func buildListOfFiles(dir string) ([]string, error) {
 	}
 	
 	return files, nil
+}
+
+func CopyFile(src, dst string) (error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	err = out.Sync()
+	return nil
 }
 
 func appendStringSlice(a, b []string) ([]string) {
