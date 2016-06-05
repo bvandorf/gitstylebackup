@@ -390,11 +390,16 @@ func BackupFiles(cfg Config) (error) {
 	//copy new and updateed file to dest dir
 	for key,val := range tempDB.File {
 		if val.dirty {
-			fmt.Println("UPDATE: " + key + " -> ", val.Hash)
-			err := CopyFile(val.Name, dbBackupFolder + "\\" + hashToFileName(val.Hash))
-			if err != nil {
-				fmt.Println("Error Copying File " + err.Error())
-			}
+			exists, _ := FileExists(dbBackupFolder + "\\" + hashToFileName(val.Hash))
+			if exists == false {
+				fmt.Println("UPDATE: " + key + " -> ", val.Hash)
+				err := CopyFile(val.Name, dbBackupFolder + "\\" + hashToFileName(val.Hash))
+				if err != nil {
+					fmt.Println("Error Copying File " + err.Error())
+				}
+			} else {
+				fmt.Println("SKIPING: " + key + " -> ", val.Hash)
+			} 
 		}
 		if val.deleteed {
 			fmt.Println("DELETE: " + key + " -> ", val.Hash)
@@ -429,7 +434,7 @@ func FixFiles(cfg Config) (error) {
 func hashToFileName(hash []byte) (string) {
 	name := ""
 	for _,v := range hash {
-		name += strconv.Itoa(int(v))
+		name += fmt.Sprintf("%03d", v)
 	}
 	return name
 }
