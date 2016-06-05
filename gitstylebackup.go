@@ -13,12 +13,14 @@ import (
 	"crypto/sha1"
 	"bufio"
 	"strconv"
+	"time"
 )
 
 var usageStr = `
 Backup Options:
 -b, --backup				Use to backup using config file
--t, --trim <date>			Use to trim backup directory to date specified
+-t, --trim <version>		Use to trim backup directory to version's specified
+           <-x>             Use to trim backup directory to keep x version's specified
 -c, --config <file>			Use to specify the config file used (default: config.txt)
     --exampleconfig <file>	Use to make an example config file
 	--fix					Use to fix interupted backup or trim
@@ -176,11 +178,13 @@ type bdb_version struct {
 	Number int
 	File map[string]bdb_version_file
 	Hash []byte
+	Date time.Time
 }
 
 type bdb_version_file struct {
 	Name string
 	Hash []byte
+	Date time.Time
 	deleteed bool `json:"-"`
 	dirty bool `json:"-"`
 }
@@ -317,6 +321,7 @@ func BackupFiles(cfg Config) (error) {
 	var tempDB = bdb_version{}
 	tempDB.Number = dbVersionNumber + 1
 	tempDB.File = map[string]bdb_version_file{}
+	tempDB.Date = time.Now()
 	var tempDBFile = bdb_version_file{}
 	
 	if dbVersionNumber > 0 {
@@ -326,6 +331,7 @@ func BackupFiles(cfg Config) (error) {
 			tempDBFile.dirty = false
 			tempDBFile.Name = f.Name
 			tempDBFile.Hash = f.Hash
+			tempDBFile.Date = f.Date
 			
 			tempDB.File[f.Name] = tempDBFile
 			tempDB.Hash = appendHash(tempDB.Hash, tempDBFile.Hash)
@@ -354,6 +360,7 @@ func BackupFiles(cfg Config) (error) {
 							tempDBFile.Name = f
 							tempDBFile.dirty = true
 							tempDBFile.Hash = newHash
+							tempDBFile.Date = time.Now()
 						}
 						versionHash = appendHash(versionHash, newHash)
 						tempDB.File[f] = tempDBFile
@@ -376,6 +383,7 @@ func BackupFiles(cfg Config) (error) {
 					tempDBFile.Name = cd
 					tempDBFile.dirty = true
 					tempDBFile.Hash = newHash
+					tempDBFile.Date = time.Now()
 				}
 				versionHash = appendHash(versionHash, newHash)
 				tempDBFile.Hash = newHash
