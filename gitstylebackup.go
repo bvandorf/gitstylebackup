@@ -185,7 +185,7 @@ type bdb_version_file struct {
 	Name string
 	Hash []byte
 	Date time.Time
-	deleteed bool `json:"-"`
+	deleted bool `json:"-"`
 	dirty bool `json:"-"`
 }
 
@@ -327,7 +327,7 @@ func BackupFiles(cfg Config) (error) {
 	if dbVersionNumber > 0 {
 		//read all files and hashes to temp list for oldest version number
 		for _,f := range db.Version[sdbVersionNumber].File {
-			tempDBFile.deleteed = true
+			tempDBFile.deleted = true
 			tempDBFile.dirty = false
 			tempDBFile.Name = f.Name
 			tempDBFile.Hash = f.Hash
@@ -353,7 +353,7 @@ func BackupFiles(cfg Config) (error) {
 					//file in folder
 					tempDBFile = tempDB.File[f]
 					
-					tempDBFile.deleteed = false
+					tempDBFile.deleted = false
 					newHash, err := hashFile(f)
 					if err == nil {
 						if !testEq(tempDBFile.Hash, newHash) {
@@ -376,7 +376,7 @@ func BackupFiles(cfg Config) (error) {
 			//backup file
 			tempDBFile = tempDB.File[cd]
 			
-			tempDBFile.deleteed = false
+			tempDBFile.deleted = false
 			newHash, err := hashFile(cd)
 			if err == nil {
 				if !testEq(tempDBFile.Hash, newHash) {
@@ -400,17 +400,17 @@ func BackupFiles(cfg Config) (error) {
 		if val.dirty {
 			exists, _ := FileExists(dbBackupFolder + "\\" + hashToFileName(val.Hash))
 			if exists == false {
-				fmt.Println("UPDATE: " + key + " -> ", val.Hash)
+				fmt.Println("UPDATE FILE: " + key + " -> ", val.Hash)
 				err := CopyFile(val.Name, dbBackupFolder + "\\" + hashToFileName(val.Hash))
 				if err != nil {
 					fmt.Println("Error Copying File " + err.Error())
 				}
 			} else {
-				fmt.Println("SKIPING: " + key + " -> ", val.Hash)
+				fmt.Println("SKIPING FILE: " + key + " -> ", val.Hash)
 			} 
 		}
-		if val.deleteed {
-			fmt.Println("DELETE: " + key + " -> ", val.Hash)
+		if val.deleted {
+			fmt.Println("SOURCE FILE DELETED: " + key + " -> ", val.Hash)
 			delete(tempDB.File, key)
 		}
 	}
