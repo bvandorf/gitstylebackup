@@ -562,8 +562,10 @@ func FixFiles(cfg Config) error {
 	}
 
 	for _, f := range files {
-		if StringArrayContains(dbfiles, f) == false {
-			FileDelete(f)
+		if f != dbFilePath {
+			if StringArrayContains(dbfiles, f) == false {
+				FileDelete(f)
+			}
 		}
 	}
 
