@@ -23,7 +23,7 @@ Backup Options:
            <-x>             Use to trim backup directory to keep x version's specified
 -c, --config <file>			Use to specify the config file used (default: config.txt)
     --exampleconfig <file>	Use to make an example config file
-	--fix					Use to fix interupted backup or trim
+	--fix					Use to fix interrupted backup or trim
 	
 Common Options:
 -h, --help					Show this help
@@ -101,7 +101,7 @@ func main() {
 		eConfig.Include = append(eConfig.Include, "c:\\programdata")
 
 		if err := writeConfig(exampleConfig, eConfig); err != nil {
-			log.Fatal("Error Writeing Example Config File: " + err.Error())
+			log.Fatal("Error Writing Example Config File: " + err.Error())
 		}
 
 		os.Exit(0)
@@ -123,7 +123,7 @@ func main() {
 		cfg.trimValue = trimVersionArg
 		err := TrimFiles(cfg)
 		if err != nil {
-			log.Fatal("Error Triming Backup Files: " + err.Error())
+			log.Fatal("Error Trimming Backup Files: " + err.Error())
 		}
 	}
 
@@ -169,7 +169,7 @@ func writeConfig(path string, cfg Config) error {
 
 	err = WriteByteSliceToFile(path, data)
 	if err != nil {
-		return errors.New("Writeing File Error " + err.Error())
+		return errors.New("Writing File Error " + err.Error())
 	}
 
 	return nil
@@ -223,7 +223,7 @@ func writeDB(path string, db bdb) error {
 
 	err = WriteByteSliceToFile(path, data)
 	if err != nil {
-		return errors.New("Writeing db Error " + err.Error())
+		return errors.New("Writing db Error " + err.Error())
 	}
 
 	return nil
@@ -314,7 +314,7 @@ func BackupFiles(cfg Config) error {
 		return errors.New("Reading DB Error " + err.Error())
 	}
 
-	//add inuse fal to file
+	//add in use flag to file
 	db.Inuse = true
 
 	err = writeDB(dbFilePath, db)
@@ -410,7 +410,7 @@ func BackupFiles(cfg Config) error {
 	}
 	tempDB.Hash = versionHash
 
-	//copy new and updateed file to dest dir
+	//copy new and updated file to dest dir
 	for key, val := range tempDB.File {
 		if val.dirty {
 			exists, _ := FileExists(dbBackupFolder + "\\" + hashToFileName(val.Hash))
@@ -430,7 +430,7 @@ func BackupFiles(cfg Config) error {
 		}
 	}
 
-	//update db and remove inuse flag
+	//update db and remove in use flag
 	newVersion := bdb_version{}
 	newVersion.Number = tempDB.Number
 	newVersion.File = tempDB.File
@@ -466,7 +466,7 @@ func TrimFiles(cfg Config) error {
 		return errors.New("No Backup Files To Trim")
 	}
 
-	//add inuse fal to file
+	//add in use flag to file
 	db.Inuse = true
 
 	err = writeDB(dbFilePath, db)
@@ -482,7 +482,7 @@ func TrimFiles(cfg Config) error {
 		}
 	}
 
-	//find what versin to trim to
+	//find what version to trim to
 	trimVersion, err := strconv.Atoi(cfg.trimValue)
 	if err != nil {
 		return err
@@ -537,7 +537,7 @@ func FixFiles(cfg Config) error {
 		return errors.New("No Backup Files To Trim")
 	}
 
-	//add inuse fal to file
+	//add in use flag to file
 	db.Inuse = true
 
 	err = writeDB(dbFilePath, db)
