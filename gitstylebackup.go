@@ -96,9 +96,9 @@ func main() {
 
 	if exampleConfig != "" {
 		var eConfig = Config{}
-		eConfig.BackupDir = "c:\\temp"
-		eConfig.Include = append(eConfig.Include, "c:\\users")
-		eConfig.Include = append(eConfig.Include, "c:\\programdata")
+		eConfig.BackupDir = "C:\\Temp"
+		eConfig.Include = append(eConfig.Include, "C:\\Users")
+		eConfig.Include = append(eConfig.Include, "C:\\ProgramData")
 
 		if err := writeConfig(exampleConfig, eConfig); err != nil {
 			log.Fatal("Error Writing Example Config File: " + err.Error())
@@ -188,11 +188,13 @@ type bdb_version struct {
 }
 
 type bdb_version_file struct {
-	Name    string
-	Hash    []byte
-	Date    time.Time
-	deleted bool `json:"-"`
-	dirty   bool `json:"-"`
+	Name         string
+	Hash         []byte
+	Date         time.Time
+	DateModified time.Time
+	Size         string
+	deleted      bool `json:"-"`
+	dirty        bool `json:"-"`
 }
 
 func readDB(path string) (bdb, error) {
@@ -347,6 +349,8 @@ func BackupFiles(cfg Config) error {
 			tempDBFile.Name = f.Name
 			tempDBFile.Hash = f.Hash
 			tempDBFile.Date = f.Date
+			tempDBFile.DateModified = f.DateModified
+			tempDBFile.Size = f.Size
 
 			tempDB.File[f.Name] = tempDBFile
 			tempDB.Hash = appendHash(tempDB.Hash, tempDBFile.Hash)
@@ -376,6 +380,8 @@ func BackupFiles(cfg Config) error {
 							tempDBFile.dirty = true
 							tempDBFile.Hash = newHash
 							tempDBFile.Date = time.Now()
+							tempDBFile.DateModified = getFileModifiedDate(f)
+							tempDBFile.Size = strconv.FormatFloat(getFileSize(f), 'f', 6, 64)
 						}
 						versionHash = appendHash(versionHash, newHash)
 						tempDB.File[f] = tempDBFile
@@ -399,6 +405,8 @@ func BackupFiles(cfg Config) error {
 					tempDBFile.dirty = true
 					tempDBFile.Hash = newHash
 					tempDBFile.Date = time.Now()
+					tempDBFile.DateModified = getFileModifiedDate(cd)
+					tempDBFile.Size = strconv.FormatFloat(getFileSize(cd), 'f', 6, 64)
 				}
 				versionHash = appendHash(versionHash, newHash)
 				tempDBFile.Hash = newHash
@@ -498,10 +506,10 @@ func TrimFiles(cfg Config) error {
 	}
 
 	for ver := 0; ver < trimVersion; ver++ {
-		for key, _ := range db.Version[strconv.Itoa(ver)].File {
-			err := FileDelete(key)
+		for _, val := range db.Version[strconv.Itoa(ver)].File {
+			err := FileDelete(cfg.BackupDir + "\\" + hashToFileName(val.Hash))
 			if err != nil {
-				fmt.Println("Error Deleting File " + key)
+				fmt.Println("Error Deleting File " + hashToFileName(val.Hash) + " " + err.Error())
 			}
 		}
 		delete(db.Version, strconv.Itoa(ver))
@@ -577,6 +585,23 @@ func FixFiles(cfg Config) error {
 	}
 
 	return nil
+}
+
+func getFileSize(path string) float64 {
+	f, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	sizeMB := float64(f.Size()) / 1024.0 / 1024.0
+	return sizeMB
+}
+
+func getFileModifiedDate(path string) time.Time {
+	f, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return f.ModTime()
 }
 
 func hashToFileName(hash []byte) string {
