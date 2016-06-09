@@ -20,7 +20,7 @@ var usageStr = `
 Backup Options:
 -b, --backup				Use to backup using config file
 -t, --trim <version>		Use to trim backup directory to version's specified
-           <-x>             Use to trim backup directory to keep x version's specified
+           <+x>             Use to trim backup directory to keep current + x version's specified
 -c, --config <file>			Use to specify the config file used (default: config.txt)
     --exampleconfig <file>	Use to make an example config file
 	--fix					Use to fix interrupted backup or trim
@@ -496,22 +496,31 @@ func TrimFiles(cfg Config) error {
 		return err
 	}
 
-	if strings.Contains(cfg.trimValue, "-") {
+	if strings.Contains(cfg.trimValue, "+") {
 		trimVersion = dbMaxVersionNumber - trimVersion
 	}
 
-	//check if this is valid trim version
-	if dbMaxVersionNumber < trimVersion {
-		errors.New("Trim To Version " + strconv.Itoa(trimVersion) + " Does Not Exist")
+	var toDel = []string{}
+	for ver := 0; ver < trimVersion; ver++ {
+		for _, val := range db.Version[strconv.Itoa(ver)].File {
+			toDel = appendStringSlice(toDel, []string{hashToFileName(val.Hash)})
+		}
+	}
+
+	for ver := trimVersion; ver <= dbMaxVersionNumber; ver++ {
+		for _, val := range db.Version[strconv.Itoa(ver)].File {
+			toDel = deleteStringSlice(toDel, hashToFileName(val.Hash))
+		}
+	}
+
+	for _, val := range toDel {
+		err := FileDelete(cfg.BackupDir + "\\" + val)
+		if err != nil {
+			fmt.Println("Error Deleting File " + val + " " + err.Error())
+		}
 	}
 
 	for ver := 0; ver < trimVersion; ver++ {
-		for _, val := range db.Version[strconv.Itoa(ver)].File {
-			err := FileDelete(cfg.BackupDir + "\\" + hashToFileName(val.Hash))
-			if err != nil {
-				fmt.Println("Error Deleting File " + hashToFileName(val.Hash) + " " + err.Error())
-			}
-		}
 		delete(db.Version, strconv.Itoa(ver))
 	}
 
@@ -558,13 +567,13 @@ func FixFiles(cfg Config) error {
 	//make a quick list of the files in the db
 	var dbfiles = []string{}
 	for _, ver := range db.Version {
-		for f := range ver.File {
-			dbfiles = appendStringSlice(dbfiles, []string{f})
+		for _, f := range ver.File {
+			dbfiles = appendStringSlice(dbfiles, []string{hashToFileName(f.Hash)})
 		}
 	}
 
 	//make a list of files in the backup folder
-	files, err := buildListOfFiles(dbBackupFolder)
+	files, err := buildListOfFileNames(dbBackupFolder)
 	if err != nil {
 		return err
 	}
@@ -572,7 +581,10 @@ func FixFiles(cfg Config) error {
 	for _, f := range files {
 		if f != dbFilePath {
 			if StringArrayContains(dbfiles, f) == false {
-				FileDelete(f)
+				err := FileDelete(dbBackupFolder + "\\" + f)
+				if err != nil {
+					fmt.Println("Error Deleting File " + f + " " + err.Error())
+				}
 			}
 		}
 	}
@@ -633,6 +645,27 @@ func buildListOfFiles(dir string) ([]string, error) {
 	return files, nil
 }
 
+func buildListOfFileNames(dir string) ([]string, error) {
+	files := []string{}
+	dirFiles, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return []string{}, err
+	}
+
+	for _, df := range dirFiles {
+		if df.IsDir() {
+			tmpFiles, err := buildListOfFiles(dir + "\\" + df.Name())
+			if err == nil {
+				files = appendStringSlice(files, tmpFiles)
+			}
+		} else {
+			files = appendStringSlice(files, []string{df.Name()})
+		}
+	}
+
+	return files, nil
+}
+
 func CopyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -665,7 +698,16 @@ func appendStringSlice(a, b []string) []string {
 	for i, s := range b {
 		c[alen+i] = s
 	}
+	return c
+}
 
+func deleteStringSlice(a []string, b string) []string {
+	c := []string{}
+	for _, s := range a {
+		if s != b {
+			c = appendStringSlice(c, []string{s})
+		}
+	}
 	return c
 }
 
