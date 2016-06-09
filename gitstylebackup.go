@@ -419,12 +419,20 @@ func BackupFiles(cfg Config) error {
 	tempDB.Hash = versionHash
 
 	//copy new and updated file to dest dir
+	exists, _ = FolderExists(dbBackupFolder + "\\Files\\")
+	if exists == false {
+		err := MakeDir(dbBackupFolder + "\\Files")
+		if err != nil {
+			return err
+		}
+	}
+
 	for key, val := range tempDB.File {
 		if val.dirty {
-			exists, _ := FileExists(dbBackupFolder + "\\" + hashToFileName(val.Hash))
+			exists, _ := FileExists(dbBackupFolder + "\\Files\\" + hashToFileName(val.Hash))
 			if exists == false {
 				fmt.Println("UPDATE FILE: "+key+" -> ", val.Hash)
-				err := CopyFile(val.Name, dbBackupFolder+"\\"+hashToFileName(val.Hash))
+				err := CopyFile(val.Name, dbBackupFolder+"\\Files\\"+hashToFileName(val.Hash))
 				if err != nil {
 					fmt.Println("Error Copying File " + err.Error())
 				}
@@ -515,7 +523,7 @@ func TrimFiles(cfg Config) error {
 	}
 
 	for _, val := range toDel {
-		err := FileDelete(cfg.BackupDir + "\\" + val)
+		err := FileDelete(cfg.BackupDir + "\\Files\\" + val)
 		if err != nil {
 			fmt.Println("Error Deleting File " + val + " " + err.Error())
 		}
@@ -574,7 +582,7 @@ func FixFiles(cfg Config) error {
 	}
 
 	//make a list of files in the backup folder
-	files, err := buildListOfFileNames(dbBackupFolder)
+	files, err := buildListOfFileNames(dbBackupFolder + "\\Files")
 	if err != nil {
 		return err
 	}
@@ -582,7 +590,7 @@ func FixFiles(cfg Config) error {
 	for _, f := range files {
 		if f != dbFilePath {
 			if StringArrayContains(dbfiles, f) == false {
-				err := FileDelete(dbBackupFolder + "\\" + f)
+				err := FileDelete(dbBackupFolder + "\\Files\\" + f)
 				if err != nil {
 					fmt.Println("Error Deleting File " + f + " " + err.Error())
 				}
@@ -777,5 +785,17 @@ func FileDelete(path string) error {
 			err := os.Remove(path)
 			return err
 		}
+	}
+}
+
+func MakeDir(path string) error {
+	b, err := FolderExists(path)
+	if err != nil {
+		return err
+	} else if b == true {
+		return errors.New("Path Exists")
+	} else {
+		err := os.Mkdir(path, 0644)
+		return err
 	}
 }
