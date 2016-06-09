@@ -443,6 +443,7 @@ func BackupFiles(cfg Config) error {
 	newVersion.Number = tempDB.Number
 	newVersion.File = tempDB.File
 	newVersion.Hash = tempDB.Hash
+	newVersion.Date = time.Now()
 
 	db.Version[sdbNewVersionNumber] = newVersion
 
