@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -101,7 +100,8 @@ func main() {
 		eConfig.Include = append(eConfig.Include, "C:\\ProgramData")
 
 		if err := writeConfig(exampleConfig, eConfig); err != nil {
-			log.Fatal("Error Writing Example Config File: " + err.Error())
+			fmt.Println("Error Writing Example Config File: " + err.Error())
+			os.Exit(1)
 		}
 
 		os.Exit(0)
@@ -109,13 +109,15 @@ func main() {
 
 	cfg, err := readConfig(configFilePath)
 	if err != nil {
-		log.Fatal("Error Reading Config File: " + err.Error())
+		fmt.Println("Error Reading Config File: " + err.Error())
+		os.Exit(1)
 	}
 
 	if runBackup {
 		err := BackupFiles(cfg)
 		if err != nil {
-			log.Fatal("Error Backing Up Files: " + err.Error())
+			fmt.Println("Error Backing Up Files: " + err.Error())
+			os.Exit(1)
 		}
 	}
 
@@ -123,14 +125,16 @@ func main() {
 		cfg.trimValue = trimVersionArg
 		err := TrimFiles(cfg)
 		if err != nil {
-			log.Fatal("Error Trimming Backup Files: " + err.Error())
+			fmt.Println("Error Trimming Backup Files: " + err.Error())
+			os.Exit(1)
 		}
 	}
 
 	if runFix {
 		err := FixFiles(cfg)
 		if err != nil {
-			log.Fatal("Error Fixing Backup Files: " + err.Error())
+			fmt.Println("Error Fixing Backup Files: " + err.Error())
+			os.Exit(1)
 		}
 	}
 }
