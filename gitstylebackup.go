@@ -23,6 +23,7 @@ Backup Options:
 -c, --config <file>			Use to specify the config file used (default: config.txt)
     --exampleconfig <file>	Use to make an example config file
 	--fix					Use to fix interrupted backup or trim
+	--fixinuse              Use to remove inuse flag from backup db
 	
 Common Options:
 -h, --help					Show this help
@@ -67,6 +68,9 @@ func main() {
 	var runFix bool
 	flag.BoolVar(&runFix, "fix", false, "")
 
+	var runFixInuse bool
+	flag.BoolVar(&runFixInuse, "fixinuse", false, "")
+
 	flag.Usage = usage
 	flag.Parse()
 
@@ -83,13 +87,21 @@ func main() {
 		os.Exit(-1)
 	}
 
-	if runBackup && runTrim {
-		fmt.Println("You Cant Use both Trim And Backup At The Same Time")
-		usage()
+	var iCheckArgs = 0
+	if runBackup {
+		iCheckArgs++
 	}
-
-	if (runBackup || runTrim) && runFix {
-		fmt.Println("You Cant Use Trim Or Backup At The Same Time As Fix")
+	if runTrim {
+		iCheckArgs++
+	}
+	if runFix {
+		iCheckArgs++
+	}
+	if runFixInuse {
+		iCheckArgs++
+	}
+	if iCheckArgs > 1 {
+		fmt.Println("You Cant Use All Arguments At The Same Time")
 		usage()
 	}
 
@@ -132,6 +144,14 @@ func main() {
 
 	if runFix {
 		err := FixFiles(cfg)
+		if err != nil {
+			fmt.Println("Error Fixing Backup Files: " + err.Error())
+			os.Exit(1)
+		}
+	}
+
+	if runFixInuse {
+		err := FixFileInUse(cfg)
 		if err != nil {
 			fmt.Println("Error Fixing Backup Files: " + err.Error())
 			os.Exit(1)
@@ -320,6 +340,10 @@ func BackupFiles(cfg Config) error {
 		return errors.New("Reading DB Error " + err.Error())
 	}
 
+	if db.Inuse == true {
+		return errors.New("Backup DB Is In Use")
+	}
+
 	//add in use flag to file
 	db.Inuse = true
 
@@ -459,6 +483,8 @@ func BackupFiles(cfg Config) error {
 
 	db.Version[sdbNewVersionNumber] = newVersion
 
+	db.Inuse = false
+
 	writeDB(dbFilePath, db)
 	if err != nil {
 		return err
@@ -485,6 +511,10 @@ func TrimFiles(cfg Config) error {
 		return errors.New("Reading DB Error " + err.Error())
 	} else if exists == false {
 		return errors.New("No Backup Files To Trim")
+	}
+
+	if db.Inuse == true {
+		return errors.New("Backup DB Is In Use")
 	}
 
 	//add in use flag to file
@@ -567,6 +597,10 @@ func FixFiles(cfg Config) error {
 		return errors.New("No Backup Files To Trim")
 	}
 
+	if db.Inuse == true {
+		return errors.New("Backup DB Is In Use")
+	}
+
 	//add in use flag to file
 	db.Inuse = true
 
@@ -607,6 +641,41 @@ func FixFiles(cfg Config) error {
 	writeDB(dbFilePath, db)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func FixFileInUse(cfg Config) error {
+	var db = bdb{}
+
+	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	var dbFilePath = dbBackupFolder + "\\backup.db"
+
+	//look for backup db
+	exists, err := FileExists(dbFilePath)
+	if exists == true && err == nil {
+		tmpdb, err := readDB(dbFilePath)
+		if err != nil {
+			return errors.New("Reading DB Error " + err.Error())
+		}
+		db = tmpdb
+	} else if exists == true && err != nil {
+		return errors.New("Reading DB Error " + err.Error())
+	} else if exists == false {
+		return errors.New("No Backup Files To Trim")
+	}
+
+	if db.Inuse == true {
+		//add in use flag to file
+		db.Inuse = false
+
+		err = writeDB(dbFilePath, db)
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New("Backup DB Is Not In Use")
 	}
 
 	return nil
