@@ -29,6 +29,9 @@ Common Options:
 -h, --help					Show this help
 -v, --version				Show version
 
+Notes:
+case is important when defining paths in the config file
+
 Exit Codes:
 	 0 = Clean
 	-1 = Version or help
@@ -110,6 +113,7 @@ func main() {
 		eConfig.BackupDir = "C:\\Temp"
 		eConfig.Include = append(eConfig.Include, "C:\\Users")
 		eConfig.Include = append(eConfig.Include, "C:\\ProgramData")
+		eConfig.Exclude = append(eConfig.Exclude, "C:\\Users\\Default")
 
 		if err := writeConfig(exampleConfig, eConfig); err != nil {
 			fmt.Println("Error Writing Example Config File: " + err.Error())
@@ -162,6 +166,7 @@ func main() {
 type Config struct {
 	BackupDir string
 	Include   []string
+	Exclude   []string
 	trimValue string `json:"-"`
 }
 
@@ -394,7 +399,7 @@ func BackupFiles(cfg Config) error {
 		exists, err := FolderExists(cd)
 		if exists == true && err == nil {
 			//backup folder
-			files, err := buildListOfFiles(cd)
+			files, err := buildListOfFiles(cd, cfg.Exclude)
 			if err == nil {
 				for _, f := range files {
 					//file in folder
@@ -706,7 +711,15 @@ func hashToFileName(hash []byte) string {
 	return name
 }
 
-func buildListOfFiles(dir string) ([]string, error) {
+func buildListOfFiles(dir string, exclude []string) ([]string, error) {
+	for _, val := range exclude {
+		fmt.Println("dir " + dir)
+		fmt.Println("val " + val)
+		if strings.HasPrefix(dir, val) {
+			return []string{}, nil
+		}
+	}
+
 	files := []string{}
 	dirFiles, err := ioutil.ReadDir(dir)
 	if err != nil {
@@ -715,7 +728,7 @@ func buildListOfFiles(dir string) ([]string, error) {
 
 	for _, df := range dirFiles {
 		if df.IsDir() {
-			tmpFiles, err := buildListOfFiles(dir + "\\" + df.Name())
+			tmpFiles, err := buildListOfFiles(dir+"\\"+df.Name(), exclude)
 			if err == nil {
 				files = appendStringSlice(files, tmpFiles)
 			}
@@ -736,7 +749,7 @@ func buildListOfFileNames(dir string) ([]string, error) {
 
 	for _, df := range dirFiles {
 		if df.IsDir() {
-			tmpFiles, err := buildListOfFiles(dir + "\\" + df.Name())
+			tmpFiles, err := buildListOfFileNames(dir + "\\" + df.Name())
 			if err == nil {
 				files = appendStringSlice(files, tmpFiles)
 			}
