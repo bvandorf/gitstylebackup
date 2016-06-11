@@ -452,7 +452,7 @@ func BackupFiles(cfg Config) error {
 	tempDB.Hash = versionHash
 
 	//copy new and updated file to dest dir
-	exists, _ = FolderExists(dbBackupFolder + "\\Files\\")
+	exists, _ = FolderExists(dbBackupFolder + "\\Files")
 	if exists == false {
 		err := MakeDir(dbBackupFolder + "\\Files")
 		if err != nil {
@@ -460,12 +460,24 @@ func BackupFiles(cfg Config) error {
 		}
 	}
 
+	var SubFolderName = ""
+	var HashFileName = ""
 	for key, val := range tempDB.File {
 		if val.dirty {
-			exists, _ := FileExists(dbBackupFolder + "\\Files\\" + hashToFileName(val.Hash))
+			HashFileName = hashToFileName(val.Hash)
+			SubFolderName = HashFileName[0:2]
+			exists, _ = FolderExists(dbBackupFolder + "\\Files\\" + SubFolderName)
+			if exists == false {
+				err := MakeDir(dbBackupFolder + "\\Files\\" + SubFolderName)
+				if err != nil {
+					return err
+				}
+			}
+
+			exists, _ := FileExists(dbBackupFolder + "\\Files\\" + SubFolderName + "\\" + HashFileName)
 			if exists == false {
 				fmt.Println("UPDATE FILE: "+key+" -> ", val.Hash)
-				err := CopyFile(val.Name, dbBackupFolder+"\\Files\\"+hashToFileName(val.Hash))
+				err := CopyFile(val.Name, dbBackupFolder+"\\Files\\"+SubFolderName+"\\"+HashFileName)
 				if err != nil {
 					fmt.Println("Error Copying File " + err.Error())
 				}
@@ -561,8 +573,10 @@ func TrimFiles(cfg Config) error {
 		}
 	}
 
+	var SubFolderName = ""
 	for _, val := range toDel {
-		err := FileDelete(cfg.BackupDir + "\\Files\\" + val)
+		SubFolderName = val[0:2]
+		err := FileDelete(cfg.BackupDir + "\\Files\\" + SubFolderName + "\\" + val)
 		if err != nil {
 			fmt.Println("Error Deleting File " + val + " " + err.Error())
 		}
@@ -630,10 +644,12 @@ func FixFiles(cfg Config) error {
 		return err
 	}
 
+	var SubFolderName = ""
 	for _, f := range files {
 		if f != dbFilePath {
 			if StringArrayContains(dbfiles, f) == false {
-				err := FileDelete(dbBackupFolder + "\\Files\\" + f)
+				SubFolderName = f[0:2]
+				err := FileDelete(dbBackupFolder + "\\Files\\" + SubFolderName + "\\" + f)
 				if err != nil {
 					fmt.Println("Error Deleting File " + f + " " + err.Error())
 				}
@@ -713,8 +729,6 @@ func hashToFileName(hash []byte) string {
 
 func buildListOfFiles(dir string, exclude []string) ([]string, error) {
 	for _, val := range exclude {
-		fmt.Println("dir " + dir)
-		fmt.Println("val " + val)
 		if strings.HasPrefix(dir, val) {
 			return []string{}, nil
 		}
