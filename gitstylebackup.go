@@ -23,7 +23,7 @@ Backup Options:
 -c, --config <file>			Use to specify the config file used (default: config.txt)
     --exampleconfig <file>	Use to make an example config file
 	--fix					Use to fix interrupted backup or trim
-	--fixinuse              Use to remove inuse flag from backup db
+	--fixinuse              Use to remove inuse flag from backup
 	
 Common Options:
 -h, --help					Show this help
@@ -38,9 +38,19 @@ Exit Codes:
 	 1 = Error
 `
 
+const timeFormat = "01/02/2006 15:04:05 -0700"
+const fileNewLine = "\r\n"
+
 func usage() {
 	fmt.Printf("%s\n", usageStr)
 	os.Exit(-1)
+}
+
+type Config struct {
+	BackupDir string
+	Include   []string
+	Exclude   []string
+	trimValue string `json:"-"`
 }
 
 func main() {
@@ -107,6 +117,9 @@ func main() {
 		fmt.Println("You Cant Use All Arguments At The Same Time")
 		usage()
 	}
+	if iCheckArgs == 0 {
+		usage()
+	}
 
 	if exampleConfig != "" {
 		var eConfig = Config{}
@@ -163,11 +176,517 @@ func main() {
 	}
 }
 
-type Config struct {
-	BackupDir string
-	Include   []string
-	Exclude   []string
-	trimValue string `json:"-"`
+func BackupFiles(cfg Config) error {
+	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
+	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
+	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
+
+	//check if backup dir in use
+	exists, err := FileExists(dbBackupInUseFile)
+	if exists || err != nil {
+		if err != nil {
+			return errors.New("In Use File Exists " + err.Error())
+		} else {
+			return errors.New("In Use File Exists")
+		}
+	}
+
+	//mark backup folder in use
+	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
+	if err != nil {
+		return errors.New("Writeing In Use File " + err.Error())
+	}
+
+	//make sure dir is setup
+	exists, err = FolderExists(dbBackupVersionFolder)
+	if exists == false && err == nil {
+		err = MakeDir(dbBackupVersionFolder)
+		if err != nil {
+			return errors.New("Makeing Version Folder " + err.Error())
+		}
+	}
+
+	exists, err = FolderExists(dbBackupFilesFolder)
+	if exists == false && err == nil {
+		err = MakeDir(dbBackupFilesFolder)
+		if err != nil {
+			return errors.New("Makeing Files Folder " + err.Error())
+		}
+
+		for i := 0; i <= 25; i++ {
+			err = MakeDir(dbBackupFilesFolder + "\\" + fmt.Sprintf("%02d", i))
+			if err != nil {
+				return errors.New("Makeing SubFiles Folder " + err.Error())
+			}
+		}
+	}
+
+	//find max version number
+	var dbNewVersionNumber = 0
+	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
+	if err != nil {
+		return errors.New("Reading Version Files " + err.Error())
+	}
+	for _, verDF := range verDirFile {
+		if verDF.IsDir() == false {
+			if strings.HasSuffix(verDF.Name(), ".tmp") {
+				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
+				if err != nil {
+					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+				}
+			} else {
+				testVer, err := strconv.Atoi(verDF.Name())
+				if err != nil {
+					return errors.New("Parsing Version File " + err.Error())
+				}
+
+				if dbNewVersionNumber < testVer {
+					dbNewVersionNumber = testVer
+				}
+			}
+		}
+	}
+
+	dbNewVersionNumber = dbNewVersionNumber + 1
+
+	var dbBackupNewVersionFile = dbBackupVersionFolder + "\\" + strconv.Itoa(dbNewVersionNumber)
+	var dbBackupNewTempVersionFile = dbBackupNewVersionFile + ".tmp"
+
+	//open version file
+	verFile, err := os.OpenFile(dbBackupNewTempVersionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		errors.New("Opening Version File " + err.Error())
+	}
+
+	_, err = verFile.WriteString("VERSION:" + strconv.Itoa(dbNewVersionNumber) + fileNewLine)
+	if err != nil {
+		return errors.New("Writeing Version File " + err.Error())
+	}
+
+	_, err = verFile.WriteString("DATE:" + time.Now().Format(timeFormat) + fileNewLine)
+	if err != nil {
+		return errors.New("Writeing Version File " + err.Error())
+	}
+
+	var verHash []byte
+	for _, cd := range cfg.Include {
+		//check if dir in config is valid
+		exists, err := FolderExists(cd)
+		if exists == true && err == nil {
+			//backup folder
+			tempHash, err := _BackupFilesFolder(cd, cfg.Exclude, dbBackupFilesFolder, verFile)
+			if err != nil {
+				return err
+			}
+			verHash = appendHash(verHash, tempHash)
+		} else if exists == true && err != nil {
+			//backup file
+			tempHash, err := _BackupFilesFolder(cd, cfg.Exclude, dbBackupFilesFolder, verFile)
+			if err != nil {
+				return err
+			}
+			verHash = appendHash(verHash, tempHash)
+		} else {
+			fmt.Println("Error Backing Up " + cd + " No Fle Or Folder Exists")
+		}
+	}
+
+	_, err = verFile.WriteString("VERSIONHASH:" + hashToString(verHash) + fileNewLine)
+	if err != nil {
+		return errors.New("Writeing Version File " + err.Error())
+	}
+
+	verFile.Close()
+
+	err = os.Rename(dbBackupNewTempVersionFile, dbBackupNewVersionFile)
+	if err != nil {
+		return errors.New("Renameing Version File " + err.Error())
+	}
+
+	//remove in use file
+	err = FileDelete(dbBackupInUseFile)
+	if err != nil {
+		return errors.New("Deleting In Use File " + err.Error())
+	}
+
+	return nil
+}
+
+func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFile *os.File) ([]byte, error) {
+	for _, dir := range exclude {
+		dir = strings.TrimRight(dir, "\\")
+		if strings.HasPrefix(path, dir) {
+			return []byte{}, nil
+		}
+	}
+
+	var FolderHash []byte
+	dirFiles, err := ioutil.ReadDir(path)
+	if err != nil {
+		fmt.Println("Error Reading Folder " + path + " " + err.Error())
+		return []byte{}, nil
+	}
+
+	for _, df := range dirFiles {
+		if df.IsDir() {
+			tempHash, err := _BackupFilesFolder(path+"\\"+df.Name(), exclude, dbFilesPath, verFile)
+			if err != nil {
+				return []byte{}, nil
+			}
+			FolderHash = appendHash(FolderHash, tempHash)
+		} else {
+			var bExclude = false
+			for _, dir := range exclude {
+				dir = strings.TrimRight(dir, "\\")
+				if strings.HasPrefix(path+"\\"+df.Name(), dir) {
+					bExclude = true
+				}
+			}
+
+			if bExclude == false {
+				fileHash, err := hashFile(path + "\\" + df.Name())
+				if err != nil {
+					fmt.Println("Error Hashing File " + path + "\\" + df.Name() + " " + err.Error())
+				}
+
+				sFileHash := hashToString(fileHash)
+
+				_, err = verFile.WriteString("FILE:" + path + "\\" + df.Name() + fileNewLine)
+				if err != nil {
+					return []byte{}, errors.New("Writeing Version File " + err.Error())
+				}
+
+				_, err = verFile.WriteString("MODDATE:" + getFileModifiedDate(path+"\\"+df.Name()).Format(timeFormat) + fileNewLine)
+				if err != nil {
+					return []byte{}, errors.New("Writeing Version File " + err.Error())
+				}
+
+				_, err = verFile.WriteString("HASH:" + sFileHash + fileNewLine)
+				if err != nil {
+					return []byte{}, errors.New("Writeing Version File " + err.Error())
+				}
+
+				exists, err := FileExists(dbFilesPath + "\\" + sFileHash[:2] + "\\" + sFileHash)
+				if exists == false && err == nil {
+					fmt.Println("COPYING FILE:" + path + "\\" + df.Name() + " -> " + sFileHash)
+					err = CopyFile(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash)
+					if err != nil {
+						fmt.Println("Error Copying File " + path + "\\" + df.Name() + " " + err.Error())
+					}
+				} else if exists && err == nil {
+					fmt.Println("SKIP FILE COPY:" + path + "\\" + df.Name() + " -> " + sFileHash)
+				} else {
+					fmt.Println("Error Copying File: " + path + "\\" + df.Name() + " " + err.Error())
+				}
+			}
+		}
+	}
+
+	return FolderHash, nil
+}
+
+func TrimFiles(cfg Config) error {
+	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
+	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
+	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
+
+	//check if backup dir in use
+	exists, err := FileExists(dbBackupInUseFile)
+	if exists || err != nil {
+		if err != nil {
+			return errors.New("In Use File Exists " + err.Error())
+		} else {
+			return errors.New("In Use File Exists")
+		}
+	}
+
+	//mark backup folder in use
+	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
+	if err != nil {
+		return errors.New("Writeing In Use File " + err.Error())
+	}
+
+	exists, err = FolderExists(dbBackupVersionFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			return errors.New("No Version Folder Found " + err.Error())
+		} else {
+			return errors.New("No Version Folder Found ")
+		}
+	}
+
+	exists, err = FolderExists(dbBackupFilesFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			return errors.New("No Files Folder Found " + err.Error())
+		} else {
+			return errors.New("No Files Folder Found ")
+		}
+	}
+
+	//find max version number
+	var dbMaxVersionNumber = 0
+	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
+	if err != nil {
+		return errors.New("Reading Version Files " + err.Error())
+	}
+	for _, verDF := range verDirFile {
+		if verDF.IsDir() == false {
+			if strings.HasSuffix(verDF.Name(), ".tmp") {
+				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
+				if err != nil {
+					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+				}
+			} else {
+				testVer, err := strconv.Atoi(verDF.Name())
+				if err != nil {
+					return errors.New("Parsing Version File " + err.Error())
+				}
+
+				if dbMaxVersionNumber < testVer {
+					dbMaxVersionNumber = testVer
+				}
+			}
+		}
+	}
+
+	//find what version to trim to
+	trimVersion, err := strconv.Atoi(cfg.trimValue)
+	if err != nil {
+		return err
+	}
+
+	if strings.Contains(cfg.trimValue, "+") {
+		trimVersion = dbMaxVersionNumber - trimVersion
+	}
+
+	fmt.Println("Trimming To Version ", trimVersion)
+
+	verFiles, err := ioutil.ReadDir(dbBackupVersionFolder)
+	if err != nil {
+		errors.New("Reading Version Folder " + err.Error())
+	}
+
+	var toDel = map[string]bool{}
+	for _, verDF := range verFiles {
+		fmt.Println("Loading Version File " + verDF.Name())
+		testVer, err := strconv.Atoi(verDF.Name())
+		if err != nil {
+			return errors.New("Parsing Version File " + err.Error())
+		}
+		if testVer < trimVersion {
+			verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
+			if err != nil {
+				return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+			}
+
+			var verFileHash = ""
+			scanner := bufio.NewScanner(verFile)
+			for scanner.Scan() {
+				verFileHash = scanner.Text()
+				if strings.HasPrefix(verFileHash, "HASH:") {
+					fmt.Println("Adding File Hash " + verFileHash[5:])
+					toDel[verFileHash[5:]] = true
+				}
+			}
+
+			verFile.Close()
+		}
+	}
+
+	for _, verDF := range verFiles {
+		fmt.Println("Loading Version File " + verDF.Name())
+		testVer, err := strconv.Atoi(verDF.Name())
+		if err != nil {
+			return errors.New("Parsing Version File " + err.Error())
+		}
+		if testVer >= trimVersion {
+			verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
+			if err != nil {
+				return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+			}
+
+			var verFileHash = ""
+			scanner := bufio.NewScanner(verFile)
+			for scanner.Scan() {
+				verFileHash = scanner.Text()
+				if strings.HasPrefix(verFileHash, "HASH:") {
+					fmt.Println("Removeing File Hash " + verFileHash[5:])
+					toDel[verFileHash[5:]] = false
+				}
+			}
+
+			verFile.Close()
+		}
+	}
+
+	//delete files from disk
+	for key, val := range toDel {
+		if val == true {
+			fmt.Println("Deleting File " + key)
+			err := FileDelete(dbBackupFilesFolder + "\\" + key[:2] + "\\" + key)
+			if err != nil {
+				fmt.Println("Error Deleting File " + key + " " + err.Error())
+			}
+		}
+	}
+
+	//delete version file from disk
+	for ver := 1; ver < trimVersion; ver++ {
+		exists, err = FileExists(dbBackupVersionFolder + "\\" + strconv.Itoa(ver))
+		if exists && err == nil {
+			fmt.Println("Deleteing Version ", ver)
+			err = FileDelete(dbBackupVersionFolder + "\\" + strconv.Itoa(ver))
+			if err != nil {
+				return errors.New("Deleteing Versin File " + strconv.Itoa(ver) + " " + err.Error())
+			}
+		} else if err != nil {
+			return errors.New("Deleteing Version File " + strconv.Itoa(ver) + " " + err.Error())
+		}
+	}
+
+	//remove in use file
+	err = FileDelete(dbBackupInUseFile)
+	if err != nil {
+		return errors.New("Deleteing In User File " + err.Error())
+	}
+
+	return nil
+}
+
+func FixFiles(cfg Config) error {
+	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
+	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
+	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
+
+	//check if backup dir in use
+	exists, err := FileExists(dbBackupInUseFile)
+	if exists || err != nil {
+		if err != nil {
+			return errors.New("In Use File Exists " + err.Error())
+		} else {
+			return errors.New("In Use File Exists")
+		}
+	}
+
+	//mark backup folder in use
+	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
+	if err != nil {
+		return errors.New("Writeing In Use File " + err.Error())
+	}
+
+	exists, err = FolderExists(dbBackupVersionFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			return errors.New("No Version Folder Found " + err.Error())
+		} else {
+			return errors.New("No Version Folder Found ")
+		}
+	}
+
+	exists, err = FolderExists(dbBackupFilesFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			return errors.New("No Files Folder Found " + err.Error())
+		} else {
+			return errors.New("No Files Folder Found ")
+		}
+	}
+
+	//find max version number
+	var dbMaxVersionNumber = 0
+	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
+	if err != nil {
+		return errors.New("Reading Version Files " + err.Error())
+	}
+	for _, verDF := range verDirFile {
+		if verDF.IsDir() == false {
+			if strings.HasSuffix(verDF.Name(), ".tmp") {
+				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
+				if err != nil {
+					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+				}
+			} else {
+				testVer, err := strconv.Atoi(verDF.Name())
+				if err != nil {
+					return errors.New("Parsing Version File " + err.Error())
+				}
+
+				if dbMaxVersionNumber < testVer {
+					dbMaxVersionNumber = testVer
+				}
+			}
+		}
+	}
+
+	//open version file for reading hashes
+	verFiles, err := ioutil.ReadDir(dbBackupVersionFolder)
+	if err != nil {
+		return errors.New("Reading Version Folder " + err.Error())
+	}
+
+	var toKeep = map[string]bool{}
+	for _, verDF := range verFiles {
+		fmt.Println("Loading Versin File " + verDF.Name())
+		verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
+		if err != nil {
+			return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+		}
+
+		var verFileHash = ""
+		scanner := bufio.NewScanner(verFile)
+		for scanner.Scan() {
+			verFileHash = scanner.Text()
+			if strings.HasPrefix(verFileHash, "HASH:") {
+				fmt.Println("Adding File Hash " + verFileHash[5:])
+				toKeep[verFileHash[5:]] = true
+			}
+		}
+		verFile.Close()
+	}
+
+	err = _FixFilesDir(dbBackupFilesFolder, toKeep)
+	if err != nil {
+		return errors.New("Fixing Files " + err.Error())
+	}
+
+	//remove in use file
+	err = FileDelete(dbBackupInUseFile)
+	if err != nil {
+		return errors.New("Deleteing In Use File " + err.Error())
+	}
+
+	return nil
+}
+
+func _FixFilesDir(dir string, toKeep map[string]bool) error {
+	dirFiles, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+
+	for _, df := range dirFiles {
+		if df.IsDir() {
+			err := _FixFilesDir(dir+"\\"+df.Name(), toKeep)
+			if err != nil {
+				return err
+			}
+		} else {
+			fmt.Println("Checking File " + df.Name())
+			if toKeep[df.Name()] == false {
+				fmt.Println("Deleteing File " + df.Name())
+				err = FileDelete(dir + "\\" + df.Name())
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func readConfig(path string) (Config, error) {
@@ -199,62 +718,6 @@ func writeConfig(path string, cfg Config) error {
 	err = WriteByteSliceToFile(path, data)
 	if err != nil {
 		return errors.New("Writing File Error " + err.Error())
-	}
-
-	return nil
-}
-
-type bdb struct {
-	Inuse   bool
-	Version map[string]bdb_version
-}
-
-type bdb_version struct {
-	Number int
-	File   map[string]bdb_version_file
-	Hash   []byte
-	Date   time.Time
-}
-
-type bdb_version_file struct {
-	Name         string
-	Hash         []byte
-	Date         time.Time
-	DateModified time.Time
-	Size         string
-	deleted      bool `json:"-"`
-	dirty        bool `json:"-"`
-}
-
-func readDB(path string) (bdb, error) {
-	exists, err := FileExists(path)
-	if err != nil || exists == false {
-		return bdb{}, errors.New("File Does Not Exist")
-	}
-
-	data, err := ReadByteSliceOfFile(path)
-	if err != nil {
-		return bdb{}, errors.New("Reading DB Error " + err.Error())
-	}
-
-	var db = bdb{}
-	err = json.Unmarshal(data, &db)
-	if err != nil {
-		return bdb{}, errors.New("Unmarshaling File Error " + err.Error())
-	}
-
-	return db, nil
-}
-
-func writeDB(path string, db bdb) error {
-	data, err := json.Marshal(db)
-	if err != nil {
-		return errors.New("Marshalling db Error " + err.Error())
-	}
-
-	err = WriteByteSliceToFile(path, data)
-	if err != nil {
-		return errors.New("Writing db Error " + err.Error())
 	}
 
 	return nil
@@ -296,407 +759,14 @@ func appendHash(b, a []byte) []byte {
 	return hasher.Sum(nil)
 }
 
-func testEq(a, b []byte) bool {
-	if a == nil && b == nil {
-		return true
-	}
-
-	if a == nil || b == nil {
-		return false
-	}
-
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-func StringArrayContains(input []string, has string) bool {
-	for _, s := range input {
-		if s == has {
-			return true
-		}
-	}
-	return false
-}
-
-func BackupFiles(cfg Config) error {
-	var db = bdb{}
-
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbFilePath = dbBackupFolder + "\\backup.db"
-
-	//look for backup db
-	exists, err := FileExists(dbFilePath)
-	if exists == true && err == nil {
-		tmpdb, err := readDB(dbFilePath)
-		if err != nil {
-			return errors.New("Reading DB Error " + err.Error())
-		}
-		db = tmpdb
-	} else if exists == true && err != nil {
-		return errors.New("Reading DB Error " + err.Error())
-	}
-
-	if db.Inuse == true {
-		return errors.New("Backup DB Is In Use")
-	}
-
-	//add in use flag to file
-	db.Inuse = true
-
-	err = writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	//find oldest version number
-	var dbVersionNumber = 0
-	for _, v := range db.Version {
-		if dbVersionNumber < v.Number {
-			dbVersionNumber = v.Number
-		}
-	}
-
-	var sdbVersionNumber = strconv.Itoa(dbVersionNumber)
-	var sdbNewVersionNumber = strconv.Itoa(dbVersionNumber + 1)
-
-	var tempDB = bdb_version{}
-	tempDB.Number = dbVersionNumber + 1
-	tempDB.File = map[string]bdb_version_file{}
-	tempDB.Date = time.Now()
-	var tempDBFile = bdb_version_file{}
-
-	if dbVersionNumber > 0 {
-		//read all files and hashes to temp list for oldest version number
-		for _, f := range db.Version[sdbVersionNumber].File {
-			tempDBFile.deleted = true
-			tempDBFile.dirty = false
-			tempDBFile.Name = f.Name
-			tempDBFile.Hash = f.Hash
-			tempDBFile.Date = f.Date
-			tempDBFile.DateModified = f.DateModified
-			tempDBFile.Size = f.Size
-
-			tempDB.File[f.Name] = tempDBFile
-			tempDB.Hash = appendHash(tempDB.Hash, tempDBFile.Hash)
-		}
-	} else {
-		db.Version = map[string]bdb_version{}
-	}
-
-	//run thru each dir/file in include config
-	versionHash := []byte{}
-	for _, cd := range cfg.Include {
-		//check if dir in config is valid
-		exists, err := FolderExists(cd)
-		if exists == true && err == nil {
-			//backup folder
-			files, err := buildListOfFiles(cd, cfg.Exclude)
-			if err == nil {
-				for _, f := range files {
-					//file in folder
-					tempDBFile = tempDB.File[f]
-
-					tempDBFile.deleted = false
-					newHash, err := hashFile(f)
-					if err == nil {
-						if !testEq(tempDBFile.Hash, newHash) {
-							tempDBFile.Name = f
-							tempDBFile.dirty = true
-							tempDBFile.Hash = newHash
-							tempDBFile.Date = time.Now()
-							tempDBFile.DateModified = getFileModifiedDate(f)
-							tempDBFile.Size = strconv.FormatFloat(getFileSize(f), 'f', 6, 64)
-						}
-						versionHash = appendHash(versionHash, newHash)
-						tempDB.File[f] = tempDBFile
-					} else {
-						fmt.Println("Error Hashing " + f)
-					}
-					tempDB.File[f] = tempDBFile
-				}
-			} else {
-				fmt.Println("Error Getting Files From " + cd)
-			}
-		} else if exists == true && err != nil {
-			//backup file
-			tempDBFile = tempDB.File[cd]
-
-			tempDBFile.deleted = false
-			newHash, err := hashFile(cd)
-			if err == nil {
-				if !testEq(tempDBFile.Hash, newHash) {
-					tempDBFile.Name = cd
-					tempDBFile.dirty = true
-					tempDBFile.Hash = newHash
-					tempDBFile.Date = time.Now()
-					tempDBFile.DateModified = getFileModifiedDate(cd)
-					tempDBFile.Size = strconv.FormatFloat(getFileSize(cd), 'f', 6, 64)
-				}
-				versionHash = appendHash(versionHash, newHash)
-				tempDBFile.Hash = newHash
-				tempDB.File[cd] = tempDBFile
-			} else {
-				fmt.Println("Error Hashing " + cd)
-			}
-		}
-	}
-	tempDB.Hash = versionHash
-
-	//copy new and updated file to dest dir
-	exists, _ = FolderExists(dbBackupFolder + "\\Files")
-	if exists == false {
-		err := MakeDir(dbBackupFolder + "\\Files")
-		if err != nil {
-			return err
-		}
-	}
-
-	var SubFolderName = ""
-	var HashFileName = ""
-	for key, val := range tempDB.File {
-		if val.dirty {
-			HashFileName = hashToFileName(val.Hash)
-			SubFolderName = HashFileName[0:2]
-			exists, _ = FolderExists(dbBackupFolder + "\\Files\\" + SubFolderName)
-			if exists == false {
-				err := MakeDir(dbBackupFolder + "\\Files\\" + SubFolderName)
-				if err != nil {
-					return err
-				}
-			}
-
-			exists, _ := FileExists(dbBackupFolder + "\\Files\\" + SubFolderName + "\\" + HashFileName)
-			if exists == false {
-				fmt.Println("UPDATE FILE: "+key+" -> ", val.Hash)
-				err := CopyFile(val.Name, dbBackupFolder+"\\Files\\"+SubFolderName+"\\"+HashFileName)
-				if err != nil {
-					fmt.Println("Error Copying File " + err.Error())
-				}
-			} else {
-				fmt.Println("SKIPING FILE: "+key+" -> ", val.Hash)
-			}
-		}
-		if val.deleted {
-			fmt.Println("SOURCE FILE DELETED: "+key+" -> ", val.Hash)
-			delete(tempDB.File, key)
-		}
-	}
-
-	//update db and remove in use flag
-	newVersion := bdb_version{}
-	newVersion.Number = tempDB.Number
-	newVersion.File = tempDB.File
-	newVersion.Hash = tempDB.Hash
-	newVersion.Date = time.Now()
-
-	db.Version[sdbNewVersionNumber] = newVersion
-
-	db.Inuse = false
-
-	writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func TrimFiles(cfg Config) error {
-	var db = bdb{}
-
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbFilePath = dbBackupFolder + "\\backup.db"
-
-	//look for backup db
-	exists, err := FileExists(dbFilePath)
-	if exists == true && err == nil {
-		tmpdb, err := readDB(dbFilePath)
-		if err != nil {
-			return errors.New("Reading DB Error " + err.Error())
-		}
-		db = tmpdb
-	} else if exists == true && err != nil {
-		return errors.New("Reading DB Error " + err.Error())
-	} else if exists == false {
-		return errors.New("No Backup Files To Trim")
-	}
-
-	if db.Inuse == true {
-		return errors.New("Backup DB Is In Use")
-	}
-
-	//add in use flag to file
-	db.Inuse = true
-
-	err = writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	//find the oldest db version
-	var dbMaxVersionNumber = 0
-	for _, v := range db.Version {
-		if dbMaxVersionNumber < v.Number {
-			dbMaxVersionNumber = v.Number
-		}
-	}
-
-	//find what version to trim to
-	trimVersion, err := strconv.Atoi(cfg.trimValue)
-	if err != nil {
-		return err
-	}
-
-	if strings.Contains(cfg.trimValue, "+") {
-		trimVersion = dbMaxVersionNumber - trimVersion
-	}
-
-	var toDel = []string{}
-	for ver := 0; ver < trimVersion; ver++ {
-		for _, val := range db.Version[strconv.Itoa(ver)].File {
-			toDel = appendStringSlice(toDel, []string{hashToFileName(val.Hash)})
-		}
-	}
-
-	for ver := trimVersion; ver <= dbMaxVersionNumber; ver++ {
-		for _, val := range db.Version[strconv.Itoa(ver)].File {
-			toDel = deleteStringSlice(toDel, hashToFileName(val.Hash))
-		}
-	}
-
-	var SubFolderName = ""
-	for _, val := range toDel {
-		SubFolderName = val[0:2]
-		err := FileDelete(cfg.BackupDir + "\\Files\\" + SubFolderName + "\\" + val)
-		if err != nil {
-			fmt.Println("Error Deleting File " + val + " " + err.Error())
-		}
-	}
-
-	for ver := 0; ver < trimVersion; ver++ {
-		delete(db.Version, strconv.Itoa(ver))
-	}
-
-	db.Inuse = false
-
-	writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func FixFiles(cfg Config) error {
-	var db = bdb{}
-
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbFilePath = dbBackupFolder + "\\backup.db"
-
-	//look for backup db
-	exists, err := FileExists(dbFilePath)
-	if exists == true && err == nil {
-		tmpdb, err := readDB(dbFilePath)
-		if err != nil {
-			return errors.New("Reading DB Error " + err.Error())
-		}
-		db = tmpdb
-	} else if exists == true && err != nil {
-		return errors.New("Reading DB Error " + err.Error())
-	} else if exists == false {
-		return errors.New("No Backup Files To Trim")
-	}
-
-	if db.Inuse == true {
-		return errors.New("Backup DB Is In Use")
-	}
-
-	//add in use flag to file
-	db.Inuse = true
-
-	err = writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	//clean up any files not in the db
-
-	//make a quick list of the files in the db
-	var dbfiles = []string{}
-	for _, ver := range db.Version {
-		for _, f := range ver.File {
-			dbfiles = appendStringSlice(dbfiles, []string{hashToFileName(f.Hash)})
-		}
-	}
-
-	//make a list of files in the backup folder
-	files, err := buildListOfFileNames(dbBackupFolder + "\\Files")
-	if err != nil {
-		return err
-	}
-
-	var SubFolderName = ""
-	for _, f := range files {
-		if f != dbFilePath {
-			if StringArrayContains(dbfiles, f) == false {
-				SubFolderName = f[0:2]
-				err := FileDelete(dbBackupFolder + "\\Files\\" + SubFolderName + "\\" + f)
-				if err != nil {
-					fmt.Println("Error Deleting File " + f + " " + err.Error())
-				}
-			}
-		}
-	}
-
-	db.Inuse = false
-
-	writeDB(dbFilePath, db)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func FixFileInUse(cfg Config) error {
-	var db = bdb{}
-
 	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbFilePath = dbBackupFolder + "\\backup.db"
+	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
 
-	//look for backup db
-	exists, err := FileExists(dbFilePath)
-	if exists == true && err == nil {
-		tmpdb, err := readDB(dbFilePath)
-		if err != nil {
-			return errors.New("Reading DB Error " + err.Error())
-		}
-		db = tmpdb
-	} else if exists == true && err != nil {
-		return errors.New("Reading DB Error " + err.Error())
-	} else if exists == false {
-		return errors.New("No Backup Files To Trim")
-	}
-
-	if db.Inuse == true {
-		//add in use flag to file
-		db.Inuse = false
-
-		err = writeDB(dbFilePath, db)
-		if err != nil {
-			return err
-		}
-	} else {
-		return errors.New("Backup DB Is Not In Use")
+	//remove the inuse file
+	err := FileDelete(dbBackupInUseFile)
+	if err != err {
+		return errors.New("Error Removeing In Use File " + err.Error())
 	}
 
 	return nil
@@ -719,60 +789,12 @@ func getFileModifiedDate(path string) time.Time {
 	return f.ModTime()
 }
 
-func hashToFileName(hash []byte) string {
+func hashToString(hash []byte) string {
 	name := ""
 	for _, v := range hash {
 		name += fmt.Sprintf("%03d", v)
 	}
 	return name
-}
-
-func buildListOfFiles(dir string, exclude []string) ([]string, error) {
-	for _, val := range exclude {
-		if strings.HasPrefix(dir, val) {
-			return []string{}, nil
-		}
-	}
-
-	files := []string{}
-	dirFiles, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return []string{}, err
-	}
-
-	for _, df := range dirFiles {
-		if df.IsDir() {
-			tmpFiles, err := buildListOfFiles(dir+"\\"+df.Name(), exclude)
-			if err == nil {
-				files = appendStringSlice(files, tmpFiles)
-			}
-		} else {
-			files = appendStringSlice(files, []string{dir + "/" + df.Name()})
-		}
-	}
-
-	return files, nil
-}
-
-func buildListOfFileNames(dir string) ([]string, error) {
-	files := []string{}
-	dirFiles, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return []string{}, err
-	}
-
-	for _, df := range dirFiles {
-		if df.IsDir() {
-			tmpFiles, err := buildListOfFileNames(dir + "\\" + df.Name())
-			if err == nil {
-				files = appendStringSlice(files, tmpFiles)
-			}
-		} else {
-			files = appendStringSlice(files, []string{df.Name()})
-		}
-	}
-
-	return files, nil
 }
 
 func CopyFile(src, dst string) error {
@@ -806,16 +828,6 @@ func appendStringSlice(a, b []string) []string {
 	}
 	for i, s := range b {
 		c[alen+i] = s
-	}
-	return c
-}
-
-func deleteStringSlice(a []string, b string) []string {
-	c := []string{}
-	for _, s := range a {
-		if s != b {
-			c = appendStringSlice(c, []string{s})
-		}
 	}
 	return c
 }
