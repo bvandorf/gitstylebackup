@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"compress/gzip"
 )
 
 var usageStr = `
@@ -52,6 +53,11 @@ type Config struct {
 	Exclude   []string
 	trimValue string `json:"-"`
 }
+
+var dbBackupFolder = ""
+var dbBackupVersionFolder = ""
+var dbBackupFilesFolder = ""
+var dbBackupInUseFile = ""
 
 func main() {
 	var showHelp bool
@@ -142,6 +148,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	dbBackupVersionFolder = dbBackupFolder + "\\Version"
+	dbBackupFilesFolder = dbBackupFolder + "\\Files"
+	dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
+	
 	if runBackup {
 		err := BackupFiles(cfg)
 		if err != nil {
@@ -177,11 +188,7 @@ func main() {
 }
 
 func BackupFiles(cfg Config) error {
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
-	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
-	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
-
+	
 	//check if backup dir in use
 	exists, err := FileExists(dbBackupInUseFile)
 	if exists || err != nil {
@@ -370,7 +377,7 @@ func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFi
 				exists, err := FileExists(dbFilesPath + "\\" + sFileHash[:2] + "\\" + sFileHash)
 				if exists == false && err == nil {
 					fmt.Println("COPYING FILE:" + path + "\\" + df.Name() + " -> " + sFileHash)
-					err = CopyFile(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash)
+					err = CopyFileAndGZip(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash)
 					if err != nil {
 						fmt.Println("Error Copying File " + path + "\\" + df.Name() + " " + err.Error())
 					}
@@ -387,10 +394,6 @@ func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFi
 }
 
 func TrimFiles(cfg Config) error {
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
-	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
-	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
 
 	//check if backup dir in use
 	exists, err := FileExists(dbBackupInUseFile)
@@ -557,11 +560,7 @@ func TrimFiles(cfg Config) error {
 }
 
 func FixFiles(cfg Config) error {
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbBackupVersionFolder = dbBackupFolder + "\\Version"
-	var dbBackupFilesFolder = dbBackupFolder + "\\Files"
-	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
-
+	
 	//check if backup dir in use
 	exists, err := FileExists(dbBackupInUseFile)
 	if exists || err != nil {
@@ -663,6 +662,7 @@ func FixFiles(cfg Config) error {
 }
 
 func _FixFilesDir(dir string, toKeep map[string]bool) error {
+	
 	dirFiles, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return err
@@ -684,6 +684,17 @@ func _FixFilesDir(dir string, toKeep map[string]bool) error {
 				}
 			}
 		}
+	}
+
+	return nil
+}
+
+func FixFileInUse(cfg Config) error {
+
+	//remove the inuse file
+	err := FileDelete(dbBackupInUseFile)
+	if err != err {
+		return errors.New("Error Removeing In Use File " + err.Error())
 	}
 
 	return nil
@@ -759,19 +770,6 @@ func appendHash(b, a []byte) []byte {
 	return hasher.Sum(nil)
 }
 
-func FixFileInUse(cfg Config) error {
-	var dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
-	var dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
-
-	//remove the inuse file
-	err := FileDelete(dbBackupInUseFile)
-	if err != err {
-		return errors.New("Error Removeing In Use File " + err.Error())
-	}
-
-	return nil
-}
-
 func getFileSize(path string) float64 {
 	f, err := os.Stat(path)
 	if err != nil {
@@ -797,26 +795,35 @@ func hashToString(hash []byte) string {
 	return name
 }
 
-func CopyFile(src, dst string) error {
+func CopyFileAndGZip(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
+	gzipWriter := gzip.NewWriter(out)
 	defer func() {
-		cerr := out.Close()
+		cerr := gzipWriter.Close()
+		if err == nil {
+			err = cerr
+		}
+		cerr = out.Close()
 		if err == nil {
 			err = cerr
 		}
 	}()
-	if _, err = io.Copy(out, in); err != nil {
+	if _, err = io.Copy(gzipWriter, in); err != nil {
 		return err
 	}
 	err = out.Sync()
+	if err != nil {
+		return err 
+	}
 	return nil
 }
 
