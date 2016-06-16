@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"crypto/sha1"
 	"encoding/json"
 	"errors"
@@ -10,33 +11,38 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-	"compress/gzip"
 )
+
+func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU() - 1)
+}
 
 var usageStr = `
 Backup Options:
--b, --backup				Use to backup using config file
--t, --trim <version>		Use to trim backup directory to version's specified
+-b, --backup                Use to backup using config file
+-t, --trim <version>        Use to trim backup directory to version's specified
            <+x>             Use to trim backup directory to keep current + x version's specified
--c, --config <file>			Use to specify the config file used (default: config.txt)
-    --exampleconfig <file>	Use to make an example config file
-	--fix					Use to fix interrupted backup or trim
-	--fixinuse              Use to remove inuse flag from backup
-	
+-c, --config <file>         Use to specify the config file used (default: config.txt)
+    --exampleconfig <file>  Use to make an example config file
+    --fix                   Use to fix interrupted backup or trim
+    --fixinuse              Use to remove inuse flag from backup
+
 Common Options:
--h, --help					Show this help
--v, --version				Show version
+-h, --help                  Show this help
+-v, --version               Show version
 
 Notes:
 case is important when defining paths in the config file
 
 Exit Codes:
-	 0 = Clean
-	-1 = Version or help
-	 1 = Error
+     0 = Clean
+    -1 = Version or help
+     1 = Error
 `
 
 const timeFormat = "01/02/2006 15:04:05 -0700"
@@ -152,7 +158,26 @@ func main() {
 	dbBackupVersionFolder = dbBackupFolder + "\\Version"
 	dbBackupFilesFolder = dbBackupFolder + "\\Files"
 	dbBackupInUseFile = dbBackupFolder + "\\InUse.txt"
-	
+
+	//check if backup dir in use
+	exists, err := FileExists(dbBackupInUseFile)
+	if exists || err != nil {
+		if err != nil {
+			fmt.Println("In Use File Exists " + err.Error())
+			os.Exit(1)
+		} else {
+			fmt.Println("In Use File Exists ")
+			os.Exit(1)
+		}
+	}
+
+	//mark backup folder in use
+	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
+	if err != nil {
+		fmt.Println("Writeing In Use File " + err.Error())
+		os.Exit(1)
+	}
+
 	if runBackup {
 		err := BackupFiles(cfg)
 		if err != nil {
@@ -185,28 +210,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	//remove in use file
+	err = FileDelete(dbBackupInUseFile)
+	if err != nil {
+		fmt.Println("Deleting In Use File " + err.Error())
+		os.Exit(1)
+	}
 }
 
 func BackupFiles(cfg Config) error {
-	
-	//check if backup dir in use
-	exists, err := FileExists(dbBackupInUseFile)
-	if exists || err != nil {
-		if err != nil {
-			return errors.New("In Use File Exists " + err.Error())
-		} else {
-			return errors.New("In Use File Exists")
-		}
-	}
-
-	//mark backup folder in use
-	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
-	if err != nil {
-		return errors.New("Writeing In Use File " + err.Error())
-	}
 
 	//make sure dir is setup
-	exists, err = FolderExists(dbBackupVersionFolder)
+	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false && err == nil {
 		err = MakeDir(dbBackupVersionFolder)
 		if err != nil {
@@ -304,6 +320,8 @@ func BackupFiles(cfg Config) error {
 		return errors.New("Writeing Version File " + err.Error())
 	}
 
+	wg.Wait()
+
 	verFile.Close()
 
 	err = os.Rename(dbBackupNewTempVersionFile, dbBackupNewVersionFile)
@@ -311,14 +329,10 @@ func BackupFiles(cfg Config) error {
 		return errors.New("Renameing Version File " + err.Error())
 	}
 
-	//remove in use file
-	err = FileDelete(dbBackupInUseFile)
-	if err != nil {
-		return errors.New("Deleting In Use File " + err.Error())
-	}
-
 	return nil
 }
+
+var wg sync.WaitGroup
 
 func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFile *os.File) ([]byte, error) {
 	for _, dir := range exclude {
@@ -369,6 +383,11 @@ func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFi
 					return []byte{}, errors.New("Writeing Version File " + err.Error())
 				}
 
+				_, err = verFile.WriteString("SIZE:" + strconv.FormatFloat(getFileSize(path+"\\"+df.Name()), 'f', 6, 64) + fileNewLine)
+				if err != nil {
+					return []byte{}, errors.New("Writeing Version File " + err.Error())
+				}
+
 				_, err = verFile.WriteString("HASH:" + sFileHash + fileNewLine)
 				if err != nil {
 					return []byte{}, errors.New("Writeing Version File " + err.Error())
@@ -377,15 +396,21 @@ func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFi
 				exists, err := FileExists(dbFilesPath + "\\" + sFileHash[:2] + "\\" + sFileHash)
 				if exists == false && err == nil {
 					fmt.Println("COPYING FILE:" + path + "\\" + df.Name() + " -> " + sFileHash)
-					err = CopyFileAndGZip(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash)
-					if err != nil {
-						fmt.Println("Error Copying File " + path + "\\" + df.Name() + " " + err.Error())
-					}
+					wg.Add(1)
+					go func(gosrcpath, godstpath string, gowg *sync.WaitGroup) {
+						defer wg.Done()
+						goerr := CopyFileAndGZip(gosrcpath, godstpath)
+						if goerr != nil {
+							fmt.Println("Error Copying File " + gosrcpath + " " + goerr.Error())
+						}
+					}(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash, &wg)
 				} else if exists && err == nil {
 					fmt.Println("SKIP FILE COPY:" + path + "\\" + df.Name() + " -> " + sFileHash)
 				} else {
 					fmt.Println("Error Copying File: " + path + "\\" + df.Name() + " " + err.Error())
 				}
+
+				FolderHash = appendHash(FolderHash, fileHash)
 			}
 		}
 	}
@@ -395,23 +420,7 @@ func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFi
 
 func TrimFiles(cfg Config) error {
 
-	//check if backup dir in use
-	exists, err := FileExists(dbBackupInUseFile)
-	if exists || err != nil {
-		if err != nil {
-			return errors.New("In Use File Exists " + err.Error())
-		} else {
-			return errors.New("In Use File Exists")
-		}
-	}
-
-	//mark backup folder in use
-	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
-	if err != nil {
-		return errors.New("Writeing In Use File " + err.Error())
-	}
-
-	exists, err = FolderExists(dbBackupVersionFolder)
+	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false || err != nil {
 		if err != nil {
 			return errors.New("No Version Folder Found " + err.Error())
@@ -560,24 +569,8 @@ func TrimFiles(cfg Config) error {
 }
 
 func FixFiles(cfg Config) error {
-	
-	//check if backup dir in use
-	exists, err := FileExists(dbBackupInUseFile)
-	if exists || err != nil {
-		if err != nil {
-			return errors.New("In Use File Exists " + err.Error())
-		} else {
-			return errors.New("In Use File Exists")
-		}
-	}
 
-	//mark backup folder in use
-	err = WriteByteSliceToFile(dbBackupInUseFile, []byte{})
-	if err != nil {
-		return errors.New("Writeing In Use File " + err.Error())
-	}
-
-	exists, err = FolderExists(dbBackupVersionFolder)
+	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false || err != nil {
 		if err != nil {
 			return errors.New("No Version Folder Found " + err.Error())
@@ -662,7 +655,7 @@ func FixFiles(cfg Config) error {
 }
 
 func _FixFilesDir(dir string, toKeep map[string]bool) error {
-	
+
 	dirFiles, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return err
@@ -801,7 +794,7 @@ func CopyFileAndGZip(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	
+
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -822,7 +815,7 @@ func CopyFileAndGZip(src, dst string) error {
 	}
 	err = out.Sync()
 	if err != nil {
-		return err 
+		return err
 	}
 	return nil
 }
