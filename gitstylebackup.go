@@ -473,6 +473,9 @@ func TrimFiles(cfg Config) error {
 	if strings.Contains(cfg.trimValue, "+") {
 		trimVersion = dbMaxVersionNumber - trimVersion
 	}
+	if trimVersion < 0 {
+		trimVersion = 0
+	}
 
 	fmt.Println("Trimming To Version ", trimVersion)
 
@@ -509,7 +512,7 @@ func TrimFiles(cfg Config) error {
 	}
 
 	for _, verDF := range verFiles {
-		fmt.Println("Loading Version File " + verDF.Name())
+		fmt.Println("Comparing To Version File " + verDF.Name())
 		testVer, err := strconv.Atoi(verDF.Name())
 		if err != nil {
 			return errors.New("Parsing Version File " + err.Error())
@@ -557,12 +560,6 @@ func TrimFiles(cfg Config) error {
 		} else if err != nil {
 			return errors.New("Deleteing Version File " + strconv.Itoa(ver) + " " + err.Error())
 		}
-	}
-
-	//remove in use file
-	err = FileDelete(dbBackupInUseFile)
-	if err != nil {
-		return errors.New("Deleteing In User File " + err.Error())
 	}
 
 	return nil
@@ -643,12 +640,6 @@ func FixFiles(cfg Config) error {
 	err = _FixFilesDir(dbBackupFilesFolder, toKeep)
 	if err != nil {
 		return errors.New("Fixing Files " + err.Error())
-	}
-
-	//remove in use file
-	err = FileDelete(dbBackupInUseFile)
-	if err != nil {
-		return errors.New("Deleteing In Use File " + err.Error())
 	}
 
 	return nil
