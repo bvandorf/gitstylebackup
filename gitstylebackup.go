@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -179,36 +180,20 @@ func main() {
 	}
 
 	if runBackup {
-		err := BackupFiles(cfg)
-		if err != nil {
-			fmt.Println("Error Backing Up Files: " + err.Error())
-			os.Exit(1)
-		}
+		BackupFiles(cfg)
 	}
 
 	if runTrim {
 		cfg.trimValue = trimVersionArg
-		err := TrimFiles(cfg)
-		if err != nil {
-			fmt.Println("Error Trimming Backup Files: " + err.Error())
-			os.Exit(1)
-		}
+		TrimFiles(cfg)
 	}
 
 	if runFix {
-		err := FixFiles(cfg)
-		if err != nil {
-			fmt.Println("Error Fixing Backup Files: " + err.Error())
-			os.Exit(1)
-		}
+		FixFiles(cfg)
 	}
 
 	if runFixInuse {
-		err := FixFileInUse(cfg)
-		if err != nil {
-			fmt.Println("Error Fixing Backup Files: " + err.Error())
-			os.Exit(1)
-		}
+		FixFileInUse(cfg)
 	}
 
 	//remove in use file
@@ -219,14 +204,15 @@ func main() {
 	}
 }
 
-func BackupFiles(cfg Config) error {
+func BackupFiles(cfg Config) {
 
 	//make sure dir is setup
 	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false && err == nil {
 		err = MakeDir(dbBackupVersionFolder)
 		if err != nil {
-			return errors.New("Makeing Version Folder " + err.Error())
+			fmt.Println("Error Makeing Version Folder " + err.Error())
+			os.Exit(1)
 		}
 	}
 
@@ -234,13 +220,15 @@ func BackupFiles(cfg Config) error {
 	if exists == false && err == nil {
 		err = MakeDir(dbBackupFilesFolder)
 		if err != nil {
-			return errors.New("Makeing Files Folder " + err.Error())
+			fmt.Println("Error Makeing Files Folder " + err.Error())
+			os.Exit(1)
 		}
 
 		for i := 0; i <= 25; i++ {
 			err = MakeDir(dbBackupFilesFolder + "\\" + fmt.Sprintf("%02d", i))
 			if err != nil {
-				return errors.New("Makeing SubFiles Folder " + err.Error())
+				fmt.Println("Error Makeing SubFiles Folder " + err.Error())
+				os.Exit(1)
 			}
 		}
 	}
@@ -249,19 +237,22 @@ func BackupFiles(cfg Config) error {
 	var dbNewVersionNumber = 0
 	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		return errors.New("Reading Version Files " + err.Error())
+		fmt.Println("Error Reading Version Files " + err.Error())
+		os.Exit(1)
 	}
 	for _, verDF := range verDirFile {
 		if verDF.IsDir() == false {
 			if strings.HasSuffix(verDF.Name(), ".tmp") {
 				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
 				if err != nil {
-					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					fmt.Println("Error Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					os.Exit(1)
 				}
 			} else {
 				testVer, err := strconv.Atoi(verDF.Name())
 				if err != nil {
-					return errors.New("Parsing Version File " + err.Error())
+					fmt.Println("Error Parsing Version File " + err.Error())
+					os.Exit(1)
 				}
 
 				if dbNewVersionNumber < testVer {
@@ -279,45 +270,105 @@ func BackupFiles(cfg Config) error {
 	//open version file
 	verFile, err := os.OpenFile(dbBackupNewTempVersionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		errors.New("Opening Version File " + err.Error())
+		fmt.Println("Error Opening Version File " + err.Error())
+		os.Exit(1)
 	}
 
 	_, err = verFile.WriteString("VERSION:" + strconv.Itoa(dbNewVersionNumber) + fileNewLine)
 	if err != nil {
-		return errors.New("Writeing Version File " + err.Error())
+		fmt.Println("Error Writeing Version File " + err.Error())
+		os.Exit(1)
 	}
 
 	_, err = verFile.WriteString("DATE:" + time.Now().Format(timeFormat) + fileNewLine)
 	if err != nil {
-		return errors.New("Writeing Version File " + err.Error())
+		fmt.Println("Error Writeing Version File " + err.Error())
+		os.Exit(1)
 	}
 
-	var verHash []byte
-	for _, cd := range cfg.Include {
-		//check if dir in config is valid
-		exists, err := FolderExists(cd)
-		if exists == true && err == nil {
-			//backup folder
-			tempHash, err := _BackupFilesFolder(cd, cfg.Exclude, dbBackupFilesFolder, verFile)
-			if err != nil {
-				return err
+	walkedFiles := make(chan string)
+
+	go func(t_walkFilePaths []string, t_walkFilePathsExclude []string, t_walkedFilesChan chan string) {
+		for _, cd := range t_walkFilePaths {
+			errc := filepath.Walk(cd, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				if !info.Mode().IsRegular() {
+					return nil
+				}
+
+				for _, ex := range t_walkFilePathsExclude {
+					if strings.HasPrefix(strings.ToLower(filepath.Join(path, info.Name())), strings.ToLower(ex)) {
+						return nil
+					}
+				}
+
+				t_walkedFilesChan <- path
+				return nil
+			})
+
+			if errc != nil {
+				fmt.Println("Error Backing Up " + cd + " : " + errc.Error())
 			}
-			verHash = appendHash(verHash, tempHash)
-		} else if exists == true && err != nil {
-			//backup file
-			tempHash, err := _BackupFilesFolder(cd, cfg.Exclude, dbBackupFilesFolder, verFile)
-			if err != nil {
-				return err
-			}
-			verHash = appendHash(verHash, tempHash)
-		} else {
-			fmt.Println("Error Backing Up " + cd + " No Fle Or Folder Exists")
 		}
-	}
 
-	_, err = verFile.WriteString("VERSIONHASH:" + hashToString(verHash) + fileNewLine)
-	if err != nil {
-		return errors.New("Writeing Version File " + err.Error())
+		close(t_walkedFilesChan)
+	}(cfg.Include, cfg.Exclude, walkedFiles)
+
+	var wg sync.WaitGroup
+	wg.Add(20)
+	for i := 0; i < 20; i++ {
+		go func() {
+			for path := range walkedFiles {
+				hash, err := hashFile(path)
+				if err != nil {
+					fmt.Println("Error Hashing File " + path + " : " + err.Error())
+				} else {
+					sFileHash := hashToString(hash)
+
+					_, err = verFile.WriteString("FILE:" + path + fileNewLine)
+					if err != nil {
+						fmt.Println("Error Writeing Version File " + err.Error())
+						os.Exit(1)
+					}
+
+					_, err = verFile.WriteString("MODDATE:" + getFileModifiedDate(path).Format(timeFormat) + fileNewLine)
+					if err != nil {
+						fmt.Println("Error Writeing Version File " + err.Error())
+						os.Exit(1)
+					}
+
+					_, err = verFile.WriteString("SIZE:" + strconv.FormatFloat(getFileSize(path), 'f', 6, 64) + fileNewLine)
+					if err != nil {
+						fmt.Println("Error Writeing Version File " + err.Error())
+						os.Exit(1)
+					}
+
+					_, err = verFile.WriteString("HASH:" + sFileHash + fileNewLine)
+					if err != nil {
+						fmt.Println("Error Writeing Version File " + err.Error())
+						os.Exit(1)
+					}
+
+					exists, err := FileExists(dbBackupFilesFolder + "\\" + sFileHash[:2] + "\\" + sFileHash)
+					if exists == false && err == nil {
+						fmt.Println("COPYING FILE:" + path + " -> " + sFileHash)
+						err := CopyFileAndGZip(path, dbBackupFilesFolder+"\\"+sFileHash[:2]+"\\"+sFileHash)
+						if err != nil {
+							fmt.Println("Error Copying File " + path + " " + err.Error())
+						}
+					} else if exists && err == nil {
+						fmt.Println("SKIP FILE COPY:" + path + " -> " + sFileHash)
+					} else {
+						fmt.Println("Error Copying File: " + path + " " + err.Error())
+					}
+				}
+			}
+
+			wg.Done()
+		}()
 	}
 
 	wg.Wait()
@@ -326,115 +377,34 @@ func BackupFiles(cfg Config) error {
 
 	err = os.Rename(dbBackupNewTempVersionFile, dbBackupNewVersionFile)
 	if err != nil {
-		return errors.New("Renameing Version File " + err.Error())
+		fmt.Println("Error Renameing Version File " + err.Error())
+		os.Exit(1)
 	}
 
-	return nil
+	return
 }
 
-var wg sync.WaitGroup
-
-func _BackupFilesFolder(path string, exclude []string, dbFilesPath string, verFile *os.File) ([]byte, error) {
-	for _, dir := range exclude {
-		dir = strings.TrimRight(dir, "\\")
-		if strings.HasPrefix(path, dir) {
-			return []byte{}, nil
-		}
-	}
-
-	var FolderHash []byte
-	dirFiles, err := ioutil.ReadDir(path)
-	if err != nil {
-		fmt.Println("Error Reading Folder " + path + " " + err.Error())
-		return []byte{}, nil
-	}
-
-	for _, df := range dirFiles {
-		if df.IsDir() {
-			tempHash, err := _BackupFilesFolder(path+"\\"+df.Name(), exclude, dbFilesPath, verFile)
-			if err != nil {
-				return []byte{}, nil
-			}
-			FolderHash = appendHash(FolderHash, tempHash)
-		} else {
-			var bExclude = false
-			for _, dir := range exclude {
-				dir = strings.TrimRight(dir, "\\")
-				if strings.HasPrefix(path+"\\"+df.Name(), dir) {
-					bExclude = true
-				}
-			}
-
-			if bExclude == false {
-				fileHash, err := hashFile(path + "\\" + df.Name())
-				if err != nil {
-					fmt.Println("Error Hashing File " + path + "\\" + df.Name() + " " + err.Error())
-				}
-
-				sFileHash := hashToString(fileHash)
-
-				_, err = verFile.WriteString("FILE:" + path + "\\" + df.Name() + fileNewLine)
-				if err != nil {
-					return []byte{}, errors.New("Writeing Version File " + err.Error())
-				}
-
-				_, err = verFile.WriteString("MODDATE:" + getFileModifiedDate(path+"\\"+df.Name()).Format(timeFormat) + fileNewLine)
-				if err != nil {
-					return []byte{}, errors.New("Writeing Version File " + err.Error())
-				}
-
-				_, err = verFile.WriteString("SIZE:" + strconv.FormatFloat(getFileSize(path+"\\"+df.Name()), 'f', 6, 64) + fileNewLine)
-				if err != nil {
-					return []byte{}, errors.New("Writeing Version File " + err.Error())
-				}
-
-				_, err = verFile.WriteString("HASH:" + sFileHash + fileNewLine)
-				if err != nil {
-					return []byte{}, errors.New("Writeing Version File " + err.Error())
-				}
-
-				exists, err := FileExists(dbFilesPath + "\\" + sFileHash[:2] + "\\" + sFileHash)
-				if exists == false && err == nil {
-					fmt.Println("COPYING FILE:" + path + "\\" + df.Name() + " -> " + sFileHash)
-					wg.Add(1)
-					go func(gosrcpath, godstpath string, gowg *sync.WaitGroup) {
-						defer wg.Done()
-						goerr := CopyFileAndGZip(gosrcpath, godstpath)
-						if goerr != nil {
-							fmt.Println("Error Copying File " + gosrcpath + " " + goerr.Error())
-						}
-					}(path+"\\"+df.Name(), dbFilesPath+"\\"+sFileHash[:2]+"\\"+sFileHash, &wg)
-				} else if exists && err == nil {
-					fmt.Println("SKIP FILE COPY:" + path + "\\" + df.Name() + " -> " + sFileHash)
-				} else {
-					fmt.Println("Error Copying File: " + path + "\\" + df.Name() + " " + err.Error())
-				}
-
-				FolderHash = appendHash(FolderHash, fileHash)
-			}
-		}
-	}
-
-	return FolderHash, nil
-}
-
-func TrimFiles(cfg Config) error {
+func TrimFiles(cfg Config) {
 
 	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false || err != nil {
 		if err != nil {
-			return errors.New("No Version Folder Found " + err.Error())
+			fmt.Println("No Version Folder Found " + err.Error())
+			os.Exit(1)
 		} else {
-			return errors.New("No Version Folder Found ")
+			fmt.Println("No Version Folder Found")
+			os.Exit(1)
 		}
 	}
 
 	exists, err = FolderExists(dbBackupFilesFolder)
 	if exists == false || err != nil {
 		if err != nil {
-			return errors.New("No Files Folder Found " + err.Error())
+			fmt.Println("No Files Folder Found " + err.Error())
+			os.Exit(1)
 		} else {
-			return errors.New("No Files Folder Found ")
+			fmt.Println("No Files Folder Found")
+			os.Exit(1)
 		}
 	}
 
@@ -442,19 +412,22 @@ func TrimFiles(cfg Config) error {
 	var dbMaxVersionNumber = 0
 	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		return errors.New("Reading Version Files " + err.Error())
+		fmt.Println("Error Reading Version Files " + err.Error())
+		os.Exit(1)
 	}
 	for _, verDF := range verDirFile {
 		if verDF.IsDir() == false {
 			if strings.HasSuffix(verDF.Name(), ".tmp") {
 				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
 				if err != nil {
-					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					fmt.Println("Error Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					os.Exit(1)
 				}
 			} else {
 				testVer, err := strconv.Atoi(verDF.Name())
 				if err != nil {
-					return errors.New("Parsing Version File " + err.Error())
+					fmt.Println("Error Parsing Version File " + err.Error())
+					os.Exit(1)
 				}
 
 				if dbMaxVersionNumber < testVer {
@@ -467,7 +440,8 @@ func TrimFiles(cfg Config) error {
 	//find what version to trim to
 	trimVersion, err := strconv.Atoi(cfg.trimValue)
 	if err != nil {
-		return err
+		fmt.Println("Error Parsing Trim Version")
+		os.Exit(1)
 	}
 
 	if strings.Contains(cfg.trimValue, "+") {
@@ -481,7 +455,8 @@ func TrimFiles(cfg Config) error {
 
 	verFiles, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		errors.New("Reading Version Folder " + err.Error())
+		fmt.Println("Error Reading Version Folder " + err.Error())
+		os.Exit(1)
 	}
 
 	var toDel = map[string]bool{}
@@ -489,12 +464,14 @@ func TrimFiles(cfg Config) error {
 		fmt.Println("Loading Version File " + verDF.Name())
 		testVer, err := strconv.Atoi(verDF.Name())
 		if err != nil {
-			return errors.New("Parsing Version File " + err.Error())
+			fmt.Println("Error Parsing Version File " + err.Error())
+			os.Exit(1)
 		}
 		if testVer < trimVersion {
 			verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
 			if err != nil {
-				return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+				fmt.Println("Error Opening Version File " + verDF.Name() + " " + err.Error())
+				os.Exit(1)
 			}
 
 			var verFileHash = ""
@@ -515,12 +492,14 @@ func TrimFiles(cfg Config) error {
 		fmt.Println("Comparing To Version File " + verDF.Name())
 		testVer, err := strconv.Atoi(verDF.Name())
 		if err != nil {
-			return errors.New("Parsing Version File " + err.Error())
+			fmt.Println("Error Parsing Version File " + err.Error())
+			os.Exit(1)
 		}
 		if testVer >= trimVersion {
 			verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
 			if err != nil {
-				return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+				fmt.Println("Error Opening Version File " + verDF.Name() + " " + err.Error())
+				os.Exit(1)
 			}
 
 			var verFileHash = ""
@@ -555,33 +534,37 @@ func TrimFiles(cfg Config) error {
 			fmt.Println("Deleteing Version ", ver)
 			err = FileDelete(dbBackupVersionFolder + "\\" + strconv.Itoa(ver))
 			if err != nil {
-				return errors.New("Deleteing Versin File " + strconv.Itoa(ver) + " " + err.Error())
+				fmt.Println("Error Deleteing Versin File " + strconv.Itoa(ver) + " " + err.Error())
 			}
 		} else if err != nil {
-			return errors.New("Deleteing Version File " + strconv.Itoa(ver) + " " + err.Error())
+			fmt.Println("Error Deleteing Version File " + strconv.Itoa(ver) + " " + err.Error())
 		}
 	}
 
-	return nil
+	return
 }
 
-func FixFiles(cfg Config) error {
+func FixFiles(cfg Config) {
 
 	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false || err != nil {
 		if err != nil {
-			return errors.New("No Version Folder Found " + err.Error())
+			fmt.Println("No Version Folder Found " + err.Error())
+			os.Exit(1)
 		} else {
-			return errors.New("No Version Folder Found ")
+			fmt.Println("No Version Folder Found")
+			os.Exit(1)
 		}
 	}
 
 	exists, err = FolderExists(dbBackupFilesFolder)
 	if exists == false || err != nil {
 		if err != nil {
-			return errors.New("No Files Folder Found " + err.Error())
+			fmt.Println("No Files Folder Found " + err.Error())
+			os.Exit(1)
 		} else {
-			return errors.New("No Files Folder Found ")
+			fmt.Println("No Files Folder Found")
+			os.Exit(1)
 		}
 	}
 
@@ -589,19 +572,22 @@ func FixFiles(cfg Config) error {
 	var dbMaxVersionNumber = 0
 	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		return errors.New("Reading Version Files " + err.Error())
+		fmt.Println("Error Reading Version Files " + err.Error())
+		os.Exit(1)
 	}
 	for _, verDF := range verDirFile {
 		if verDF.IsDir() == false {
 			if strings.HasSuffix(verDF.Name(), ".tmp") {
 				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
 				if err != nil {
-					return errors.New("Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					fmt.Println("Error Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
+					os.Exit(1)
 				}
 			} else {
 				testVer, err := strconv.Atoi(verDF.Name())
 				if err != nil {
-					return errors.New("Parsing Version File " + err.Error())
+					fmt.Println("Error Parsing Version File " + err.Error())
+					os.Exit(1)
 				}
 
 				if dbMaxVersionNumber < testVer {
@@ -614,7 +600,8 @@ func FixFiles(cfg Config) error {
 	//open version file for reading hashes
 	verFiles, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		return errors.New("Reading Version Folder " + err.Error())
+		fmt.Println("Error Reading Version Folder " + err.Error())
+		os.Exit(1)
 	}
 
 	var toKeep = map[string]bool{}
@@ -622,7 +609,8 @@ func FixFiles(cfg Config) error {
 		fmt.Println("Loading Versin File " + verDF.Name())
 		verFile, err := os.Open(dbBackupVersionFolder + "\\" + verDF.Name())
 		if err != nil {
-			return errors.New("Opening Version File " + verDF.Name() + " " + err.Error())
+			fmt.Println("Error Opening Version File " + verDF.Name() + " " + err.Error())
+			os.Exit(1)
 		}
 
 		var verFileHash = ""
@@ -639,10 +627,11 @@ func FixFiles(cfg Config) error {
 
 	err = _FixFilesDir(dbBackupFilesFolder, toKeep)
 	if err != nil {
-		return errors.New("Fixing Files " + err.Error())
+		fmt.Println("Error Fixing Files " + err.Error())
+		os.Exit(1)
 	}
 
-	return nil
+	return
 }
 
 func _FixFilesDir(dir string, toKeep map[string]bool) error {
@@ -673,15 +662,16 @@ func _FixFilesDir(dir string, toKeep map[string]bool) error {
 	return nil
 }
 
-func FixFileInUse(cfg Config) error {
+func FixFileInUse(cfg Config) {
 
 	//remove the inuse file
 	err := FileDelete(dbBackupInUseFile)
 	if err != err {
-		return errors.New("Error Removeing In Use File " + err.Error())
+		fmt.Println("Error Removeing In Use File " + err.Error())
+		os.Exit(1)
 	}
 
-	return nil
+	return
 }
 
 func readConfig(path string) (Config, error) {
@@ -718,10 +708,8 @@ func writeConfig(path string, cfg Config) error {
 	return nil
 }
 
-var hasher = sha1.New()
-
 func hashFile(path string) ([]byte, error) {
-	hasher.Reset()
+	hasher := sha1.New()
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -739,7 +727,7 @@ func hashFile(path string) ([]byte, error) {
 }
 
 func appendHash(b, a []byte) []byte {
-	hasher.Reset()
+	hasher := sha1.New()
 
 	lena := len(a)
 	c := make([]byte, lena+len(b))
