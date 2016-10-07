@@ -20,7 +20,7 @@ import (
 )
 
 func init() {
-	runtime.GOMAXPROCS(runtime.NumCPU() - 1)
+	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
 var usageStr = `
@@ -109,7 +109,7 @@ func main() {
 	}
 
 	if showVersion {
-		fmt.Println("Version 1.0")
+		fmt.Println("Version 1.1")
 		os.Exit(-1)
 	}
 
@@ -274,13 +274,8 @@ func BackupFiles(cfg Config) {
 		os.Exit(1)
 	}
 
-	_, err = verFile.WriteString("VERSION:" + strconv.Itoa(dbNewVersionNumber) + fileNewLine)
-	if err != nil {
-		fmt.Println("Error Writeing Version File " + err.Error())
-		os.Exit(1)
-	}
-
-	_, err = verFile.WriteString("DATE:" + time.Now().Format(timeFormat) + fileNewLine)
+	_, err = verFile.WriteString("VERSION:" + strconv.Itoa(dbNewVersionNumber) + fileNewLine +
+		"DATE:" + time.Now().Format(timeFormat) + fileNewLine)
 	if err != nil {
 		fmt.Println("Error Writeing Version File " + err.Error())
 		os.Exit(1)
@@ -328,25 +323,10 @@ func BackupFiles(cfg Config) {
 				} else {
 					sFileHash := hashToString(hash)
 
-					_, err = verFile.WriteString("FILE:" + path + fileNewLine)
-					if err != nil {
-						fmt.Println("Error Writeing Version File " + err.Error())
-						os.Exit(1)
-					}
-
-					_, err = verFile.WriteString("MODDATE:" + getFileModifiedDate(path).Format(timeFormat) + fileNewLine)
-					if err != nil {
-						fmt.Println("Error Writeing Version File " + err.Error())
-						os.Exit(1)
-					}
-
-					_, err = verFile.WriteString("SIZE:" + strconv.FormatFloat(getFileSize(path), 'f', 6, 64) + fileNewLine)
-					if err != nil {
-						fmt.Println("Error Writeing Version File " + err.Error())
-						os.Exit(1)
-					}
-
-					_, err = verFile.WriteString("HASH:" + sFileHash + fileNewLine)
+					_, err = verFile.WriteString("FILE:" + path + fileNewLine +
+						"MODDATE:" + getFileModifiedDate(path).Format(timeFormat) + fileNewLine +
+						"SIZE:" + strconv.FormatFloat(getFileSize(path), 'f', 6, 64) + fileNewLine +
+						"HASH:" + sFileHash + fileNewLine)
 					if err != nil {
 						fmt.Println("Error Writeing Version File " + err.Error())
 						os.Exit(1)
