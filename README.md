@@ -7,18 +7,19 @@ Each version will contain the same reference to if the file has not changed or t
 
 # gitstylebackupexplorer
 
-The application to view/restore files and directories from your backup 
+The application to view/restore files and directories from your backup <br>
 https://github.com/bvandorf/gitstylebackupexplorer
 
 # Backup Directory Structure
-
+```
 /RootFolder  -  Main backup folder for all operations
   /Versions  -  Version folder that holds each of the backup version information
   /Files     -  Files folder that holds folders starting with the hash of the file
     /00      -  Hash folder containing the files that hash starts wth 00
     ...
-
+```
 # Config File
+```
 {
     "BackupDir": "c:\\backups\\gitstylebackup",
     "Include": [
@@ -30,8 +31,9 @@ https://github.com/bvandorf/gitstylebackupexplorer
     "C:\\temp\\exclude file.txt"
     ]
 }
-
+```
 # Command Line Options
+```
 Backup Options:
 -b, --backup                Use to backup using config file
 -t, --trim <version>        Use to trim backup directory to version's specified
@@ -52,3 +54,4 @@ Exit Codes:
      0 = Clean
     -1 = Version or help
      1 = Error
+```
