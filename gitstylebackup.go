@@ -14,7 +14,6 @@
 //
 // Author: Brad Van Dorf (github.com/bvandorf)
 
-
 package main
 
 import (
@@ -45,6 +44,7 @@ Backup Options:
 -b, --backup                Use to backup using config file
 -t, --trim <version>        Use to trim backup directory to version's specified
            <+x>             Use to trim backup directory to keep current + x version's specified
+-v, --verify <version>      Use to verify files in backup directory current version is 0 
 -c, --config <file>         Use to specify the config file used (default: config.txt)
     --exampleconfig <file>  Use to make an example config file
     --fix                   Use to fix interrupted backup or trim
@@ -52,7 +52,7 @@ Backup Options:
 
 Common Options:
 -h, --help                  Show this help
--v, --version               Show version
+    --version               Show version
 
 Notes:
 case is important when defining paths in the config file
@@ -72,10 +72,11 @@ func usage() {
 }
 
 type Config struct {
-	BackupDir string
-	Include   []string
-	Exclude   []string
-	trimValue string `json:"-"`
+	BackupDir   string
+	Include     []string
+	Exclude     []string
+	trimValue   string `json:"-"`
+	verifyValue string `json:"-"`
 }
 
 var dbBackupFolder = ""
@@ -89,7 +90,6 @@ func main() {
 	flag.BoolVar(&showHelp, "help", false, "")
 
 	var showVersion bool
-	flag.BoolVar(&showVersion, "v", false, "")
 	flag.BoolVar(&showVersion, "version", false, "")
 
 	var configFilePath string
@@ -114,6 +114,11 @@ func main() {
 	var runFixInuse bool
 	flag.BoolVar(&runFixInuse, "fixinuse", false, "")
 
+	var runVerify bool
+	var verifyVersionArg = ""
+	flag.StringVar(&verifyVersionArg, "v", "", "")
+	flag.StringVar(&verifyVersionArg, "verify", "", "")
+
 	flag.Usage = usage
 	flag.Parse()
 
@@ -121,12 +126,16 @@ func main() {
 		runTrim = true
 	}
 
+	if verifyVersionArg != "" {
+		runVerify = true
+	}
+
 	if showHelp {
 		usage()
 	}
 
 	if showVersion {
-		fmt.Println("Version 1.1")
+		fmt.Println("Version 1.2")
 		os.Exit(-1)
 	}
 
@@ -141,6 +150,9 @@ func main() {
 		iCheckArgs++
 	}
 	if runFixInuse {
+		iCheckArgs++
+	}
+	if runVerify {
 		iCheckArgs++
 	}
 	if iCheckArgs > 1 {
@@ -211,6 +223,11 @@ func main() {
 
 	if runFixInuse {
 		FixFileInUse(cfg)
+	}
+
+	if runVerify {
+		cfg.verifyValue = verifyVersionArg
+		VerifyFiles(cfg)
 	}
 
 	//remove in use file
@@ -541,6 +558,103 @@ func TrimFiles(cfg Config) {
 	return
 }
 
+func VerifyFiles(cfg Config) {
+
+	exists, err := FolderExists(dbBackupVersionFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			fmt.Println("No Version Folder Found " + err.Error())
+			os.Exit(1)
+		} else {
+			fmt.Println("No Version Folder Found")
+			os.Exit(1)
+		}
+	}
+
+	exists, err = FolderExists(dbBackupFilesFolder)
+	if exists == false || err != nil {
+		if err != nil {
+			fmt.Println("No Files Folder Found " + err.Error())
+			os.Exit(1)
+		} else {
+			fmt.Println("No Files Folder Found")
+			os.Exit(1)
+		}
+	}
+
+	//find what version to verify
+	var verifyVersion = 0
+	if cfg.verifyValue == "0" {
+		//find max version number
+		var dbMaxVersionNumber = 0
+		verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
+		if err != nil {
+			fmt.Println("Error Reading Version Files " + err.Error())
+			os.Exit(1)
+		}
+		for _, verDF := range verDirFile {
+			if verDF.IsDir() == false {
+				if !strings.HasSuffix(verDF.Name(), ".tmp") {
+					testVer, err := strconv.Atoi(verDF.Name())
+					if err != nil {
+						fmt.Println("Error Parsing Version File " + err.Error())
+						os.Exit(1)
+					}
+
+					if dbMaxVersionNumber < testVer {
+						dbMaxVersionNumber = testVer
+					}
+				}
+			}
+		}
+
+		verifyVersion = dbMaxVersionNumber
+	} else {
+		verifyVersion, err = strconv.Atoi(cfg.verifyValue)
+		if err != nil {
+			fmt.Println("Error Parsing Verify Version")
+			os.Exit(1)
+		}
+	}
+
+	fmt.Println("Verifying Version ", verifyVersion)
+
+	verFile, err := os.Open(dbBackupVersionFolder + "\\" + strconv.Itoa(verifyVersion))
+	if err != nil {
+		fmt.Println("Error Opening Version File " + strconv.Itoa(verifyVersion) + " " + err.Error())
+		os.Exit(1)
+	}
+
+	var verFileHash = ""
+	var bVerifyErrors = false
+	scanner := bufio.NewScanner(verFile)
+	for scanner.Scan() {
+		verFileHash = scanner.Text()
+		if strings.HasPrefix(verFileHash, "HASH:") {
+			newFileHash, err := hashGzipFile(dbBackupFilesFolder + "\\" + verFileHash[5:7] + "\\" + verFileHash[5:])
+			if err != nil {
+				fmt.Println("Error Hashing File " + dbBackupFilesFolder + "\\" + verFileHash[5:7] + "\\" + verFileHash[5:] + " : " + err.Error())
+				bVerifyErrors = true
+			} else {
+				newStringFileHash := hashToString(newFileHash)
+
+				if newStringFileHash != verFileHash[5:] {
+					fmt.Println("File Not Verifyed " + newStringFileHash + "!=" + verFileHash[5:])
+					bVerifyErrors = true
+				}
+			}
+		}
+	}
+
+	verFile.Close()
+
+	if bVerifyErrors == true {
+		os.Exit(1)
+	}
+
+	return
+}
+
 func FixFiles(cfg Config) {
 
 	exists, err := FolderExists(dbBackupVersionFolder)
@@ -715,6 +829,30 @@ func hashFile(path string) ([]byte, error) {
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
+	_, err = io.Copy(hasher, reader)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return hasher.Sum(nil), nil
+}
+
+func hashGzipFile(path string) ([]byte, error) {
+	hasher := sha1.New()
+
+	file, err := os.Open(path)
+	if err != nil {
+		return []byte{}, err
+	}
+	defer file.Close()
+
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return []byte{}, err
+	}
+	defer gz.Close()
+
+	reader := bufio.NewReader(gz)
 	_, err = io.Copy(hasher, reader)
 	if err != nil {
 		return []byte{}, err
