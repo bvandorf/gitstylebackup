@@ -135,7 +135,7 @@ func main() {
 	}
 
 	if showVersion {
-		fmt.Println("Version 1.2")
+		fmt.Println("Version 1.3")
 		os.Exit(-1)
 	}
 
@@ -153,6 +153,9 @@ func main() {
 		iCheckArgs++
 	}
 	if runVerify {
+		iCheckArgs++
+	}
+	if exampleConfig != "" {
 		iCheckArgs++
 	}
 	if iCheckArgs > 1 {
