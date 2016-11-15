@@ -56,3 +56,14 @@ Exit Codes:
     -1 = Version or help
      1 = Error
 ```
+
+# Usage Examples
+```
+gitstylebackup -b 
+
+When useing ShadowSpawn config file must reference shado copy drive letter
+ShadowSpawn.exe c:\ z: c:\backup\gitstylebackup.exe -b -c c:\backup\config.txt
+```
+
+# Shadow Spawn
+https://github.com/candera/shadowspawn
