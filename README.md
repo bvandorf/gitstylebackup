@@ -38,6 +38,7 @@ Backup Options:
 -b, --backup                Use to backup using config file
 -t, --trim <version>        Use to trim backup directory to version's specified
            <+x>             Use to trim backup directory to keep current + x version's specified
+-v, --verify <version>      Use to verify files in backup directory current version is 0 
 -c, --config <file>         Use to specify the config file used (default: config.txt)
     --exampleconfig <file>  Use to make an example config file
     --fix                   Use to fix interrupted backup or trim
@@ -45,7 +46,7 @@ Backup Options:
 
 Common Options:
 -h, --help                  Show this help
--v, --version               Show version
+    --version               Show version
 
 Notes:
 case is important when defining paths in the config file
