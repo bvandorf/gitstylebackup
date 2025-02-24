@@ -14,7 +14,7 @@
 //
 // Author: Brad Van Dorf (github.com/bvandorf)
 
-package main
+package gitstylebackup
 
 import (
 	"bufio"
@@ -71,12 +71,13 @@ func usage() {
 	os.Exit(-1)
 }
 
+// Config holds the backup configuration
 type Config struct {
-	BackupDir   string
-	Include     []string
-	Exclude     []string
-	trimValue   string `json:"-"`
-	verifyValue string `json:"-"`
+	BackupDir   string   `json:"backupDir"`
+	Include     []string `json:"include"`
+	Exclude     []string `json:"exclude"`
+	trimValue   string   `json:"-"`
+	verifyValue string   `json:"-"`
 }
 
 var dbBackupFolder = ""
@@ -173,7 +174,7 @@ func main() {
 		eConfig.Include = append(eConfig.Include, "C:\\ProgramData")
 		eConfig.Exclude = append(eConfig.Exclude, "C:\\Users\\Default")
 
-		if err := writeConfig(exampleConfig, eConfig); err != nil {
+		if err := WriteConfig(exampleConfig, eConfig); err != nil {
 			fmt.Println("Error Writing Example Config File: " + err.Error())
 			os.Exit(1)
 		}
@@ -181,7 +182,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	cfg, err := readConfig(configFilePath)
+	cfg, err := ReadConfig(configFilePath)
 	if err != nil {
 		fmt.Println("Error Reading Config File: " + err.Error())
 		os.Exit(1)
@@ -241,15 +242,13 @@ func main() {
 	}
 }
 
-func BackupFiles(cfg Config) {
-
+func BackupFiles(cfg Config) error {
 	//make sure dir is setup
 	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false && err == nil {
 		err = MakeDir(dbBackupVersionFolder)
 		if err != nil {
-			fmt.Println("Error Makeing Version Folder " + err.Error())
-			os.Exit(1)
+			return fmt.Errorf("error making version folder: %v", err)
 		}
 	}
 
@@ -257,15 +256,13 @@ func BackupFiles(cfg Config) {
 	if exists == false && err == nil {
 		err = MakeDir(dbBackupFilesFolder)
 		if err != nil {
-			fmt.Println("Error Makeing Files Folder " + err.Error())
-			os.Exit(1)
+			return fmt.Errorf("error making files folder: %v", err)
 		}
 
 		for i := 0; i <= 25; i++ {
 			err = MakeDir(dbBackupFilesFolder + "\\" + fmt.Sprintf("%02d", i))
 			if err != nil {
-				fmt.Println("Error Makeing SubFiles Folder " + err.Error())
-				os.Exit(1)
+				return fmt.Errorf("error making subfiles folder: %v", err)
 			}
 		}
 	}
@@ -274,22 +271,19 @@ func BackupFiles(cfg Config) {
 	var dbNewVersionNumber = 0
 	verDirFile, err := ioutil.ReadDir(dbBackupVersionFolder)
 	if err != nil {
-		fmt.Println("Error Reading Version Files " + err.Error())
-		os.Exit(1)
+		return fmt.Errorf("error reading version files: %v", err)
 	}
 	for _, verDF := range verDirFile {
 		if verDF.IsDir() == false {
 			if strings.HasSuffix(verDF.Name(), ".tmp") {
 				err = FileDelete(dbBackupVersionFolder + "\\" + verDF.Name())
 				if err != nil {
-					fmt.Println("Error Cleaning Up Temp Version " + verDF.Name() + " " + err.Error())
-					os.Exit(1)
+					return fmt.Errorf("error cleaning up temp version %s: %v", verDF.Name(), err)
 				}
 			} else {
 				testVer, err := strconv.Atoi(verDF.Name())
 				if err != nil {
-					fmt.Println("Error Parsing Version File " + err.Error())
-					os.Exit(1)
+					return fmt.Errorf("error parsing version file: %v", err)
 				}
 
 				if dbNewVersionNumber < testVer {
@@ -307,15 +301,14 @@ func BackupFiles(cfg Config) {
 	//open version file
 	verFile, err := os.OpenFile(dbBackupNewTempVersionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Println("Error Opening Version File " + err.Error())
-		os.Exit(1)
+		return fmt.Errorf("error opening version file: %v", err)
 	}
+	defer verFile.Close()
 
 	_, err = verFile.WriteString("VERSION:" + strconv.Itoa(dbNewVersionNumber) + fileNewLine +
 		"DATE:" + time.Now().Format(timeFormat) + fileNewLine)
 	if err != nil {
-		fmt.Println("Error Writeing Version File " + err.Error())
-		os.Exit(1)
+		return fmt.Errorf("error writing version file: %v", err)
 	}
 
 	walkedFiles := make(chan string)
@@ -324,13 +317,21 @@ func BackupFiles(cfg Config) {
 		for _, cd := range t_walkFilePaths {
 			errc := filepath.Walk(cd, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
-					return err
+					fmt.Printf("Error accessing path %s: %v\n", path, err)
+					return filepath.SkipDir // Skip this directory but continue walking
+				}
+
+				// Skip symlinks and non-regular files
+				if info.Mode()&os.ModeSymlink != 0 {
+					fmt.Printf("Skipping symlink: %s\n", path)
+					return filepath.SkipDir
 				}
 
 				if !info.Mode().IsRegular() {
 					return nil
 				}
 
+				// Check exclusions
 				for _, ex := range t_walkFilePathsExclude {
 					if strings.HasPrefix(strings.ToLower(filepath.Join(path, info.Name())), strings.ToLower(ex)) {
 						return nil
@@ -342,7 +343,8 @@ func BackupFiles(cfg Config) {
 			})
 
 			if errc != nil {
-				fmt.Println("Error Backing Up " + cd + " : " + errc.Error())
+				fmt.Printf("Warning: Error walking path %s: %v\n", cd, errc)
+				// Continue with next path instead of exiting
 			}
 		}
 
@@ -354,33 +356,36 @@ func BackupFiles(cfg Config) {
 	for i := 0; i < 20; i++ {
 		go func() {
 			for path := range walkedFiles {
-				hash, err := hashFile(path)
+				hash, err := HashFile(path)
 				if err != nil {
-					fmt.Println("Error Hashing File " + path + " : " + err.Error())
-				} else {
-					sFileHash := hashToString(hash)
+					fmt.Printf("Warning: Error hashing file %s: %v\n", path, err)
+					continue // Skip this file but continue processing
+				}
 
-					_, err = verFile.WriteString("FILE:" + path + fileNewLine +
-						"MODDATE:" + getFileModifiedDate(path).Format(timeFormat) + fileNewLine +
-						"SIZE:" + strconv.FormatFloat(getFileSize(path), 'f', 6, 64) + fileNewLine +
-						"HASH:" + sFileHash + fileNewLine)
+				sFileHash := HashToString(hash)
+
+				_, err = verFile.WriteString("FILE:" + path + fileNewLine +
+					"MODDATE:" + GetFileModifiedDate(path).Format(timeFormat) + fileNewLine +
+					"SIZE:" + strconv.FormatFloat(GetFileSize(path), 'f', 6, 64) + fileNewLine +
+					"HASH:" + sFileHash + fileNewLine)
+				if err != nil {
+					fmt.Printf("Warning: Error writing to version file for %s: %v\n", path, err)
+					continue // Skip this file but continue processing
+				}
+
+				exists, err := FileExists(dbBackupFilesFolder + "\\" + sFileHash[:2] + "\\" + sFileHash)
+				if exists == false && err == nil {
+					fmt.Println("COPYING FILE:" + path + " -> " + sFileHash)
+					err := CopyFileAndGZip(path, dbBackupFilesFolder+"\\"+sFileHash[:2]+"\\"+sFileHash)
 					if err != nil {
-						fmt.Println("Error Writeing Version File " + err.Error())
-						os.Exit(1)
+						fmt.Printf("Warning: Error copying file %s: %v\n", path, err)
+						// Continue processing other files
 					}
-
-					exists, err := FileExists(dbBackupFilesFolder + "\\" + sFileHash[:2] + "\\" + sFileHash)
-					if exists == false && err == nil {
-						fmt.Println("COPYING FILE:" + path + " -> " + sFileHash)
-						err := CopyFileAndGZip(path, dbBackupFilesFolder+"\\"+sFileHash[:2]+"\\"+sFileHash)
-						if err != nil {
-							fmt.Println("Error Copying File " + path + " " + err.Error())
-						}
-					} else if exists && err == nil {
-						fmt.Println("SKIP FILE COPY:" + path + " -> " + sFileHash)
-					} else {
-						fmt.Println("Error Copying File: " + path + " " + err.Error())
-					}
+				} else if exists && err == nil {
+					fmt.Println("SKIP FILE COPY:" + path + " -> " + sFileHash)
+				} else {
+					fmt.Printf("Warning: Error checking file existence %s: %v\n", path, err)
+					// Continue processing other files
 				}
 			}
 
@@ -390,15 +395,15 @@ func BackupFiles(cfg Config) {
 
 	wg.Wait()
 
+	// Make sure to close the file before renaming
 	verFile.Close()
 
 	err = os.Rename(dbBackupNewTempVersionFile, dbBackupNewVersionFile)
 	if err != nil {
-		fmt.Println("Error Renameing Version File " + err.Error())
-		os.Exit(1)
+		return fmt.Errorf("error renaming version file: %v", err)
 	}
 
-	return
+	return nil
 }
 
 func TrimFiles(cfg Config) {
@@ -639,7 +644,7 @@ func VerifyFiles(cfg Config) {
 				fmt.Println("Error Hashing File " + dbBackupFilesFolder + "\\" + verFileHash[5:7] + "\\" + verFileHash[5:] + " : " + err.Error())
 				bVerifyErrors = true
 			} else {
-				newStringFileHash := hashToString(newFileHash)
+				newStringFileHash := HashToString(newFileHash)
 
 				if newStringFileHash != verFileHash[5:] {
 					fmt.Println("File Not Verifyed " + newStringFileHash + "!=" + verFileHash[5:])
@@ -777,18 +782,16 @@ func _FixFilesDir(dir string, toKeep map[string]bool) error {
 }
 
 func FixFileInUse(cfg Config) {
-
 	//remove the inuse file
 	err := FileDelete(dbBackupInUseFile)
-	if err != err {
-		fmt.Println("Error Removeing In Use File " + err.Error())
+	if err != nil {
+		fmt.Println("Error Removing In Use File " + err.Error())
 		os.Exit(1)
 	}
-
 	return
 }
 
-func readConfig(path string) (Config, error) {
+func ReadConfig(path string) (Config, error) {
 	exists, err := FileExists(path)
 	if err != nil || exists == false {
 		return Config{}, errors.New("File Does Not Exist")
@@ -808,7 +811,7 @@ func readConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func writeConfig(path string, cfg Config) error {
+func WriteConfig(path string, cfg Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return errors.New("Marshaling Error " + err.Error())
@@ -820,24 +823,6 @@ func writeConfig(path string, cfg Config) error {
 	}
 
 	return nil
-}
-
-func hashFile(path string) ([]byte, error) {
-	hasher := sha1.New()
-
-	file, err := os.Open(path)
-	if err != nil {
-		return []byte{}, err
-	}
-	defer file.Close()
-
-	reader := bufio.NewReader(file)
-	_, err = io.Copy(hasher, reader)
-	if err != nil {
-		return []byte{}, err
-	}
-
-	return hasher.Sum(nil), nil
 }
 
 func hashGzipFile(path string) ([]byte, error) {
@@ -878,63 +863,6 @@ func appendHash(b, a []byte) []byte {
 
 	hasher.Write(c)
 	return hasher.Sum(nil)
-}
-
-func getFileSize(path string) float64 {
-	f, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	sizeMB := float64(f.Size()) / 1024.0 / 1024.0
-	return sizeMB
-}
-
-func getFileModifiedDate(path string) time.Time {
-	f, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
-	}
-	return f.ModTime()
-}
-
-func hashToString(hash []byte) string {
-	name := ""
-	for _, v := range hash {
-		name += fmt.Sprintf("%03d", v)
-	}
-	return name
-}
-
-func CopyFileAndGZip(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	gzipWriter := gzip.NewWriter(out)
-	defer func() {
-		cerr := gzipWriter.Close()
-		if err == nil {
-			err = cerr
-		}
-		cerr = out.Close()
-		if err == nil {
-			err = cerr
-		}
-	}()
-	if _, err = io.Copy(gzipWriter, in); err != nil {
-		return err
-	}
-	err = out.Sync()
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func appendStringSlice(a, b []string) []string {
@@ -1027,4 +955,193 @@ func MakeDir(path string) error {
 		err := os.Mkdir(path, 0644)
 		return err
 	}
+}
+
+// Backup performs a backup operation using the provided configuration
+func Backup(cfg Config) error {
+	// Validate config
+	if cfg.BackupDir == "" {
+		return errors.New("backup directory is required")
+	}
+	if len(cfg.Include) == 0 {
+		return errors.New("at least one include path is required")
+	}
+
+	// Check if any include paths exist
+	validPath := false
+	for _, path := range cfg.Include {
+		if _, err := os.Stat(path); err == nil {
+			validPath = true
+			break
+		}
+	}
+	if !validPath {
+		return errors.New("no valid include paths found")
+	}
+
+	dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
+	dbBackupVersionFolder = filepath.Join(dbBackupFolder, "Version")
+	dbBackupFilesFolder = filepath.Join(dbBackupFolder, "Files")
+	dbBackupInUseFile = filepath.Join(dbBackupFolder, "InUse.txt")
+
+	// Create backup directory if it doesn't exist
+	if err := os.MkdirAll(dbBackupFolder, 0755); err != nil {
+		return fmt.Errorf("failed to create backup directory: %v", err)
+	}
+
+	// Create version directory if it doesn't exist
+	if err := os.MkdirAll(dbBackupVersionFolder, 0755); err != nil {
+		return fmt.Errorf("failed to create version directory: %v", err)
+	}
+
+	// Create files directory if it doesn't exist
+	if err := os.MkdirAll(dbBackupFilesFolder, 0755); err != nil {
+		return fmt.Errorf("failed to create files directory: %v", err)
+	}
+
+	// Create subdirectories in files directory
+	for i := 0; i <= 25; i++ {
+		subdir := filepath.Join(dbBackupFilesFolder, fmt.Sprintf("%02d", i))
+		if err := os.MkdirAll(subdir, 0755); err != nil {
+			return fmt.Errorf("failed to create subfiles directory %s: %v", subdir, err)
+		}
+	}
+
+	// Check if backup dir is in use
+	exists, err := FileExists(dbBackupInUseFile)
+	if exists || err != nil {
+		if err != nil {
+			return fmt.Errorf("error checking in-use file: %v", err)
+		}
+		return errors.New("backup directory is in use")
+	}
+
+	// Mark backup folder in use
+	if err := WriteByteSliceToFile(dbBackupInUseFile, []byte{}); err != nil {
+		return fmt.Errorf("failed to create in-use file: %v", err)
+	}
+	defer FileDelete(dbBackupInUseFile)
+
+	BackupFiles(cfg)
+	return nil
+}
+
+// Trim performs a trim operation using the provided configuration and trim value
+func Trim(cfg Config, trimValue string) error {
+	cfg.trimValue = trimValue
+
+	// Validate trim value
+	_, err := strconv.Atoi(trimValue)
+	if err != nil {
+		return fmt.Errorf("invalid trim version: %v", err)
+	}
+
+	return nil
+}
+
+// Verify performs a verify operation using the provided configuration and verify value
+func Verify(cfg Config, verifyValue string) error {
+	cfg.verifyValue = verifyValue
+
+	// Validate verify value
+	if verifyValue != "0" {
+		_, err := strconv.Atoi(verifyValue)
+		if err != nil {
+			return fmt.Errorf("invalid verify version: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// GetFileSize returns the size of a file in MB
+func GetFileSize(path string) float64 {
+	f, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	sizeMB := float64(f.Size()) / 1024.0 / 1024.0
+	return sizeMB
+}
+
+// GetFileModifiedDate returns the modification time of a file
+func GetFileModifiedDate(path string) time.Time {
+	f, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return f.ModTime()
+}
+
+// HashFile computes the hash of a file
+func HashFile(path string) ([]byte, error) {
+	hasher := sha1.New()
+
+	file, err := os.Open(path)
+	if err != nil {
+		return []byte{}, err
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	_, err = io.Copy(hasher, reader)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return hasher.Sum(nil), nil
+}
+
+// HashToString converts a hash to string
+func HashToString(hash []byte) string {
+	name := ""
+	for _, v := range hash {
+		name += fmt.Sprintf("%03d", v)
+	}
+	return name
+}
+
+// CopyFileAndGZip copies and compresses a file
+func CopyFileAndGZip(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	gzipWriter := gzip.NewWriter(out)
+	defer func() {
+		cerr := gzipWriter.Close()
+		if err == nil {
+			err = cerr
+		}
+		cerr = out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(gzipWriter, in); err != nil {
+		return err
+	}
+	err = out.Sync()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Fix performs a fix operation using the provided configuration
+func Fix(cfg Config) error {
+	FixFiles(cfg)
+	return nil
+}
+
+// FixInUse performs a fix in-use operation using the provided configuration
+func FixInUse(cfg Config) error {
+	FixFileInUse(cfg)
+	return nil
 }
