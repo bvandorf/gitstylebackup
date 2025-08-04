@@ -28,7 +28,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,7 +35,7 @@ import (
 )
 
 func init() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	// GOMAXPROCS is now set in main.go based on the Priority config setting
 }
 
 var usageStr = `
@@ -76,6 +75,7 @@ type Config struct {
 	BackupDir   string   `json:"backupDir"`
 	Include     []string `json:"include"`
 	Exclude     []string `json:"exclude"`
+	Priority    string   `json:"priority"`
 	trimValue   string   `json:"-"`
 	verifyValue string   `json:"-"`
 }
@@ -313,6 +313,12 @@ func BackupFiles(cfg Config) error {
 
 	walkedFiles := make(chan string)
 
+	// Normalize exclusion paths for better comparison
+	normalizedExcludes := make([]string, len(cfg.Exclude))
+	for i, path := range cfg.Exclude {
+		normalizedExcludes[i] = strings.ToLower(filepath.Clean(path))
+	}
+
 	go func(t_walkFilePaths []string, t_walkFilePathsExclude []string, t_walkedFilesChan chan string) {
 		for _, cd := range t_walkFilePaths {
 			errc := filepath.Walk(cd, func(path string, info os.FileInfo, err error) error {
@@ -331,10 +337,21 @@ func BackupFiles(cfg Config) error {
 					return nil
 				}
 
+				// Normalize the current path for comparison
+				normalizedPath := strings.ToLower(filepath.Clean(path))
+
 				// Check exclusions
 				for _, ex := range t_walkFilePathsExclude {
-					if strings.HasPrefix(strings.ToLower(filepath.Join(path, info.Name())), strings.ToLower(ex)) {
-						return nil
+					normalizedEx := strings.ToLower(filepath.Clean(ex))
+
+					// Skip if the path is exactly the excluded path
+					if normalizedPath == normalizedEx {
+						return filepath.SkipDir
+					}
+
+					// Skip if the path is a subdirectory of the excluded path
+					if strings.HasPrefix(normalizedPath, normalizedEx+string(filepath.Separator)) {
+						return filepath.SkipDir
 					}
 				}
 
@@ -349,7 +366,7 @@ func BackupFiles(cfg Config) error {
 		}
 
 		close(t_walkedFilesChan)
-	}(cfg.Include, cfg.Exclude, walkedFiles)
+	}(cfg.Include, normalizedExcludes, walkedFiles)
 
 	var wg sync.WaitGroup
 	wg.Add(20)
@@ -979,10 +996,24 @@ func Backup(cfg Config) error {
 		return errors.New("no valid include paths found")
 	}
 
+	// Get the executable path to exclude it from backup
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Warning: Could not determine executable path: %v\n", err)
+		exePath = ""
+	} else {
+		exePath = filepath.Dir(exePath)
+		fmt.Printf("Automatically excluding executable directory: %s\n", exePath)
+	}
+
+	// Setup backup paths
 	dbBackupFolder = strings.TrimRight(cfg.BackupDir, "\\")
 	dbBackupVersionFolder = filepath.Join(dbBackupFolder, "Version")
 	dbBackupFilesFolder = filepath.Join(dbBackupFolder, "Files")
 	dbBackupInUseFile = filepath.Join(dbBackupFolder, "InUse.txt")
+
+	// Automatically add backup folder to exclusions
+	fmt.Printf("Automatically excluding backup directory: %s\n", dbBackupFolder)
 
 	// Create backup directory if it doesn't exist
 	if err := os.MkdirAll(dbBackupFolder, 0755); err != nil {
@@ -1022,7 +1053,18 @@ func Backup(cfg Config) error {
 	}
 	defer FileDelete(dbBackupInUseFile)
 
-	BackupFiles(cfg)
+	// Create a temporary config with auto-exclusions
+	tempCfg := cfg
+
+	// Add executable path to exclusions if it's not empty
+	if exePath != "" {
+		tempCfg.Exclude = append(tempCfg.Exclude, exePath)
+	}
+
+	// Add backup folder to exclusions
+	tempCfg.Exclude = append(tempCfg.Exclude, dbBackupFolder)
+
+	BackupFiles(tempCfg)
 	return nil
 }
 

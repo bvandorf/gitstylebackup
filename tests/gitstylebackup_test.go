@@ -108,6 +108,7 @@ func TestFileOperations(t *testing.T) {
 			BackupDir: tc.tempDir,
 			Include:   []string{"path1", "path2"},
 			Exclude:   []string{"exclude1"},
+			Priority:  "3",
 		}
 
 		configFile := filepath.Join(tc.tempDir, "config.json")
@@ -122,6 +123,10 @@ func TestFileOperations(t *testing.T) {
 
 		if readCfg.BackupDir != cfg.BackupDir {
 			t.Errorf("Config BackupDir mismatch: got %s, want %s", readCfg.BackupDir, cfg.BackupDir)
+		}
+
+		if readCfg.Priority != cfg.Priority {
+			t.Errorf("Config Priority mismatch: got %s, want %s", readCfg.Priority, cfg.Priority)
 		}
 	})
 
@@ -227,6 +232,7 @@ func TestBackupIntegration(t *testing.T) {
 		BackupDir: backupDir,
 		Include:   []string{sourceDir},
 		Exclude:   []string{filepath.Join(sourceDir, "subdir")},
+		Priority:  "3",
 	}
 
 	// Run backup
@@ -293,6 +299,7 @@ func TestSymlinkHandling(t *testing.T) {
 	cfg := gitstylebackup.Config{
 		BackupDir: filepath.Join(tc.tempDir, "backup"),
 		Include:   []string{sourceDir},
+		Priority:  "3", // Medium priority (default)
 	}
 
 	// This should complete without infinite recursion
@@ -310,6 +317,7 @@ func TestErrorHandling(t *testing.T) {
 			BackupDir: "", // Invalid empty directory
 			Include:   []string{},
 			Exclude:   []string{},
+			Priority:  "3",
 		}
 		if err := gitstylebackup.Backup(cfg); err == nil {
 			t.Error("Expected error for invalid config")
@@ -321,6 +329,7 @@ func TestErrorHandling(t *testing.T) {
 			BackupDir: tc.tempDir,
 			Include:   []string{"non/existent/path"},
 			Exclude:   []string{},
+			Priority:  "3",
 		}
 		if err := gitstylebackup.Backup(cfg); err == nil {
 			t.Error("Expected error for non-existent source directory")
@@ -331,6 +340,7 @@ func TestErrorHandling(t *testing.T) {
 		cfg := gitstylebackup.Config{
 			BackupDir: tc.tempDir,
 			Include:   []string{tc.tempDir},
+			Priority:  "3",
 		}
 		if err := gitstylebackup.Trim(cfg, "invalid"); err == nil {
 			t.Error("Expected error for invalid trim version")
@@ -341,6 +351,7 @@ func TestErrorHandling(t *testing.T) {
 		cfg := gitstylebackup.Config{
 			BackupDir: tc.tempDir,
 			Include:   []string{tc.tempDir},
+			Priority:  "3",
 		}
 		if err := gitstylebackup.Verify(cfg, "invalid"); err == nil {
 			t.Error("Expected error for invalid verify version")
@@ -368,6 +379,7 @@ func TestFixOperations(t *testing.T) {
 	cfg := gitstylebackup.Config{
 		BackupDir: backupDir,
 		Include:   []string{sourceDir},
+		Priority:  "3", // Medium priority (default)
 	}
 
 	// Run backup
@@ -437,6 +449,7 @@ func TestConcurrentOperations(t *testing.T) {
 	cfg := gitstylebackup.Config{
 		BackupDir: backupDir,
 		Include:   []string{sourceDir},
+		Priority:  "3", // Medium priority (default)
 	}
 
 	// Run multiple backups concurrently

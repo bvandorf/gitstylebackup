@@ -1,6 +1,6 @@
 # Run Go tests with verbose output and save to test_output.txt
 Write-Host "Running tests..."
-go test -v ./tests *> .\test_output.txt
+go test -timeout 60s -v ./tests *> .\test_output.txt
 
 # Check if tests passed
 $testOutput = Get-Content .\test_output.txt -Raw

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 
 	"github.com/bvandorf/gitstylebackup/pkg/gitstylebackup"
 )
@@ -26,6 +27,8 @@ Common Options:
 
 Notes:
 case is important when defining paths in the config file
+priority in config file (1-5): 1=lowest CPU usage, 5=highest CPU usage, 3=default
+the executable directory and backup directory are automatically excluded from backup
 
 Exit Codes:
      0 = Clean
@@ -38,8 +41,17 @@ func usage() {
 	os.Exit(-1)
 }
 
+// max returns the larger of x or y
+func max(x, y int) int {
+	if x > y {
+		return x
+	}
+	return y
+}
+
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	// Default GOMAXPROCS will be set after reading config
+	var defaultMaxProcs = runtime.NumCPU() - 2
 
 	var showHelp bool
 	flag.BoolVar(&showHelp, "h", false, "")
@@ -127,6 +139,7 @@ func main() {
 			BackupDir: "C:\\Temp",
 			Include:   []string{"C:\\Users", "C:\\ProgramData"},
 			Exclude:   []string{"C:\\Users\\Default"},
+			Priority:  "3", // Medium priority (default)
 		}
 
 		if err := gitstylebackup.WriteConfig(exampleConfig, eConfig); err != nil {
@@ -142,6 +155,33 @@ func main() {
 		fmt.Println("Error Reading Config File: " + err.Error())
 		os.Exit(1)
 	}
+
+	// Adjust GOMAXPROCS based on Priority setting from config
+	var adjustedMaxProcs = defaultMaxProcs
+	if cfg.Priority != "" {
+		priorityLevel, err := strconv.Atoi(cfg.Priority)
+		if err == nil && priorityLevel > 0 {
+			// Higher priority means using more CPU cores
+			// Low number (1) = low priority (fewer cores)
+			// High number (5) = high priority (more cores)
+			switch priorityLevel {
+			case 1: // Very low - use minimum cores
+				adjustedMaxProcs = 1
+			case 2: // Low - use 25% of available cores
+				adjustedMaxProcs = max(1, runtime.NumCPU()/4)
+			case 3: // Medium (default) - use 50% of available cores
+				adjustedMaxProcs = max(1, runtime.NumCPU()/2)
+			case 4: // High - use 75% of available cores
+				adjustedMaxProcs = max(1, runtime.NumCPU()*3/4)
+			case 5: // Very high - use all available cores
+				adjustedMaxProcs = runtime.NumCPU()
+			default:
+				// Invalid priority level, use default
+				fmt.Printf("Warning: Invalid priority level '%d', using default\n", priorityLevel)
+			}
+		}
+	}
+	runtime.GOMAXPROCS(adjustedMaxProcs)
 
 	if runBackup {
 		if err := gitstylebackup.Backup(cfg); err != nil {
