@@ -18,8 +18,13 @@ package gitstylebackup
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -72,12 +77,15 @@ func usage() {
 
 // Config holds the backup configuration
 type Config struct {
-	BackupDir   string   `json:"backupDir"`
-	Include     []string `json:"include"`
-	Exclude     []string `json:"exclude"`
-	Priority    string   `json:"priority"`
-	trimValue   string   `json:"-"`
-	verifyValue string   `json:"-"`
+	BackupDir         string   `json:"backupDir"`
+	Include           []string `json:"include"`
+	Exclude           []string `json:"exclude"`
+	Priority          string   `json:"priority"`
+	EncryptPassword   string   `json:"encryptPassword,omitempty"`   // Optional encryption password
+	EncryptKeyFile    string   `json:"encryptKeyFile,omitempty"`    // Optional encryption key file path
+	RestoreStageDir   string   `json:"restoreStageDir,omitempty"`   // Optional staging directory for restore
+	trimValue         string   `json:"-"`
+	verifyValue       string   `json:"-"`
 }
 
 var dbBackupFolder = ""
@@ -243,6 +251,12 @@ func main() {
 }
 
 func BackupFiles(cfg Config) error {
+	// Get encryption key if configured
+	encryptionKey, err := getEncryptionKey(cfg)
+	if err != nil {
+		return fmt.Errorf("error getting encryption key: %v", err)
+	}
+	
 	//make sure dir is setup
 	exists, err := FolderExists(dbBackupVersionFolder)
 	if exists == false && err == nil {
@@ -393,7 +407,7 @@ func BackupFiles(cfg Config) error {
 				exists, err := FileExists(dbBackupFilesFolder + "\\" + sFileHash[:2] + "\\" + sFileHash)
 				if exists == false && err == nil {
 					fmt.Println("COPYING FILE:" + path + " -> " + sFileHash)
-					err := CopyFileAndGZip(path, dbBackupFilesFolder+"\\"+sFileHash[:2]+"\\"+sFileHash)
+					err := CopyFileAndGZipWithEncryption(path, dbBackupFilesFolder+"\\"+sFileHash[:2]+"\\"+sFileHash, encryptionKey)
 					if err != nil {
 						fmt.Printf("Warning: Error copying file %s: %v\n", path, err)
 						// Continue processing other files
@@ -1145,6 +1159,11 @@ func HashToString(hash []byte) string {
 
 // CopyFileAndGZip copies and compresses a file
 func CopyFileAndGZip(src, dst string) error {
+	return CopyFileAndGZipWithEncryption(src, dst, nil)
+}
+
+// CopyFileAndGZipWithEncryption copies, compresses, and optionally encrypts a file
+func CopyFileAndGZipWithEncryption(src, dst string, encryptionKey []byte) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1155,20 +1174,46 @@ func CopyFileAndGZip(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	gzipWriter := gzip.NewWriter(out)
-	defer func() {
-		cerr := gzipWriter.Close()
-		if err == nil {
-			err = cerr
+	defer out.Close()
+
+	if encryptionKey != nil {
+		// Read all data, compress, then encrypt
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		
+		if _, err = io.Copy(gzipWriter, in); err != nil {
+			return err
 		}
-		cerr = out.Close()
-		if err == nil {
-			err = cerr
+		
+		if err = gzipWriter.Close(); err != nil {
+			return err
 		}
-	}()
-	if _, err = io.Copy(gzipWriter, in); err != nil {
-		return err
+		
+		// Encrypt the compressed data
+		encryptedData, err := encryptData(compressedData.Bytes(), encryptionKey)
+		if err != nil {
+			return fmt.Errorf("encryption failed: %v", err)
+		}
+		
+		// Write encrypted data to file
+		if _, err = out.Write(encryptedData); err != nil {
+			return err
+		}
+	} else {
+		// Original behavior: just compress
+		gzipWriter := gzip.NewWriter(out)
+		defer func() {
+			cerr := gzipWriter.Close()
+			if err == nil {
+				err = cerr
+			}
+		}()
+		
+		if _, err = io.Copy(gzipWriter, in); err != nil {
+			return err
+		}
 	}
+	
 	err = out.Sync()
 	if err != nil {
 		return err
@@ -1185,5 +1230,472 @@ func Fix(cfg Config) error {
 // FixInUse performs a fix in-use operation using the provided configuration
 func FixInUse(cfg Config) error {
 	FixFileInUse(cfg)
+	return nil
+}
+
+// Encryption helper functions
+
+// deriveKey derives an AES key from a password using SHA256
+func deriveKey(password string) []byte {
+	hash := sha256.Sum256([]byte(password))
+	return hash[:]
+}
+
+// readKeyFromFile reads an encryption key from a file
+func readKeyFromFile(keyFilePath string) ([]byte, error) {
+	keyData, err := ioutil.ReadFile(keyFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read key file: %v", err)
+	}
+	
+	// If key is less than 32 bytes, hash it to get 32 bytes
+	if len(keyData) < 32 {
+		hash := sha256.Sum256(keyData)
+		return hash[:], nil
+	}
+	
+	// Use first 32 bytes if key is longer
+	return keyData[:32], nil
+}
+
+// encryptData encrypts data using AES-GCM
+func encryptData(data []byte, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// decryptData decrypts data using AES-GCM
+func decryptData(ciphertext []byte, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+	
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+	
+	return plaintext, nil
+}
+
+// getEncryptionKey gets the encryption key from config (password or key file)
+func getEncryptionKey(cfg Config) ([]byte, error) {
+	if cfg.EncryptPassword != "" {
+		return deriveKey(cfg.EncryptPassword), nil
+	}
+	
+	if cfg.EncryptKeyFile != "" {
+		return readKeyFromFile(cfg.EncryptKeyFile)
+	}
+	
+	return nil, nil // No encryption
+}
+
+// RestoreState represents the state of a restore operation
+type RestoreState struct {
+	Version        int      `json:"version"`
+	BackupDir      string   `json:"backupDir"`
+	RestoreDir     string   `json:"restoreDir"`
+	StageDir       string   `json:"stageDir,omitempty"`
+	Encrypted      bool     `json:"encrypted"`
+	CopiedFiles    []string `json:"copiedFiles"`
+	ExtractedFiles []string `json:"extractedFiles"`
+	Phase          string   `json:"phase"` // "copying", "extracting", "completed"
+	StartTime      string   `json:"startTime"`
+	LastUpdate     string   `json:"lastUpdate"`
+}
+
+// saveRestoreState saves the restore state to a file
+func saveRestoreState(stateFile string, state RestoreState) error {
+	state.LastUpdate = time.Now().Format(timeFormat)
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(stateFile, data, 0644)
+}
+
+// loadRestoreState loads the restore state from a file
+func loadRestoreState(stateFile string) (RestoreState, error) {
+	var state RestoreState
+	data, err := ioutil.ReadFile(stateFile)
+	if err != nil {
+		return state, err
+	}
+	err = json.Unmarshal(data, &state)
+	return state, err
+}
+
+// ExtractGZipAndDecrypt extracts and optionally decrypts a file
+func ExtractGZipAndDecrypt(src, dst string, encryptionKey []byte) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if encryptionKey != nil {
+		// Read encrypted data
+		encryptedData, err := ioutil.ReadAll(in)
+		if err != nil {
+			return err
+		}
+		
+		// Decrypt the data
+		compressedData, err := decryptData(encryptedData, encryptionKey)
+		if err != nil {
+			return fmt.Errorf("decryption failed: %v", err)
+		}
+		
+		// Decompress the data
+		gzipReader, err := gzip.NewReader(bytes.NewReader(compressedData))
+		if err != nil {
+			return err
+		}
+		defer gzipReader.Close()
+		
+		if _, err = io.Copy(out, gzipReader); err != nil {
+			return err
+		}
+	} else {
+		// Original behavior: just decompress
+		gzipReader, err := gzip.NewReader(in)
+		if err != nil {
+			return err
+		}
+		defer gzipReader.Close()
+		
+		if _, err = io.Copy(out, gzipReader); err != nil {
+			return err
+		}
+	}
+	
+	return nil
+}
+
+// Restore performs a restore operation with resumable two-stage process
+func Restore(cfg Config, version string, restoreDir string) error {
+	// Validate version
+	versionNum, err := strconv.Atoi(version)
+	if err != nil {
+		return fmt.Errorf("invalid version number: %v", err)
+	}
+	
+	// Setup paths
+	dbBackupFolder = cfg.BackupDir
+	dbBackupVersionFolder = dbBackupFolder + "\\version"
+	dbBackupFilesFolder = dbBackupFolder + "\\files"
+	
+	versionFile := dbBackupVersionFolder + "\\" + version
+	stateFile := restoreDir + "\\restore_state.json"
+	
+	// Check if version file exists
+	exists, err := FileExists(versionFile)
+	if !exists || err != nil {
+		return fmt.Errorf("backup version %s not found", version)
+	}
+	
+	// Get encryption key if configured
+	encryptionKey, err := getEncryptionKey(cfg)
+	if err != nil {
+		return fmt.Errorf("error getting encryption key: %v", err)
+	}
+	
+	// Check for existing restore state
+	var state RestoreState
+	stateExists, _ := FileExists(stateFile)
+	if stateExists {
+		state, err = loadRestoreState(stateFile)
+		if err != nil {
+			fmt.Printf("Warning: Could not load restore state, starting fresh: %v\n", err)
+			stateExists = false
+		}
+	}
+	
+	if !stateExists {
+		// Initialize new restore state
+		stageDir := restoreDir
+		if cfg.RestoreStageDir != "" {
+			stageDir = cfg.RestoreStageDir
+		}
+		
+		state = RestoreState{
+			Version:     versionNum,
+			BackupDir:   cfg.BackupDir,
+			RestoreDir:  restoreDir,
+			StageDir:    stageDir,
+			Encrypted:   encryptionKey != nil,
+			Phase:       "copying",
+			StartTime:   time.Now().Format(timeFormat),
+		}
+		
+		// Create restore directory if it doesn't exist
+		if err := os.MkdirAll(restoreDir, 0755); err != nil {
+			return fmt.Errorf("failed to create restore directory: %v", err)
+		}
+		
+		// Create stage directory if different from restore directory
+		if stageDir != restoreDir {
+			if err := os.MkdirAll(stageDir, 0755); err != nil {
+				return fmt.Errorf("failed to create stage directory: %v", err)
+			}
+		}
+	}
+	
+	fmt.Printf("Restoring backup version %s to %s\n", version, restoreDir)
+	if state.StageDir != state.RestoreDir {
+		fmt.Printf("Using staging directory: %s\n", state.StageDir)
+	}
+	
+	// Phase 1: Copy backup files to staging area
+	if state.Phase == "copying" {
+		fmt.Println("Phase 1: Copying backup files...")
+		err = copyBackupFiles(&state, versionFile, encryptionKey)
+		if err != nil {
+			return err
+		}
+		state.Phase = "extracting"
+		if err := saveRestoreState(stateFile, state); err != nil {
+			fmt.Printf("Warning: Could not save restore state: %v\n", err)
+		}
+	}
+	
+	// Phase 2: Extract files to final location
+	if state.Phase == "extracting" {
+		fmt.Println("Phase 2: Extracting files to final location...")
+		err = extractBackupFiles(&state, encryptionKey)
+		if err != nil {
+			return err
+		}
+		state.Phase = "completed"
+		if err := saveRestoreState(stateFile, state); err != nil {
+			fmt.Printf("Warning: Could not save restore state: %v\n", err)
+		}
+	}
+	
+	fmt.Println("Restore completed successfully!")
+	
+	// Clean up all temporary files after successful restore
+	fmt.Println("Cleaning up temporary files...")
+	
+	// Remove staging files (if they exist)
+	for _, hash := range state.CopiedFiles {
+		stageFilePath := state.StageDir + "\\" + hash
+		if err := os.Remove(stageFilePath); err != nil {
+			// Only warn if file exists but can't be removed
+			if !os.IsNotExist(err) {
+				fmt.Printf("Warning: Could not remove staging file %s: %v\n", stageFilePath, err)
+			}
+		}
+	}
+	
+	// Remove the restore state file
+	if err := os.Remove(stateFile); err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Printf("Warning: Could not remove state file %s: %v\n", stateFile, err)
+		}
+	}
+	
+	// Remove staging directory if it's different from restore directory and empty
+	if state.StageDir != state.RestoreDir {
+		if err := os.Remove(state.StageDir); err != nil {
+			// Only warn if directory exists but can't be removed (might not be empty)
+			if !os.IsNotExist(err) {
+				fmt.Printf("Note: Staging directory %s not removed (may contain other files): %v\n", state.StageDir, err)
+			}
+		}
+	}
+	
+	fmt.Println("Cleanup completed.")
+	return nil
+}
+
+// copyBackupFiles copies backup files from backup directory to staging area
+func copyBackupFiles(state *RestoreState, versionFile string, encryptionKey []byte) error {
+	stateFile := state.RestoreDir + "\\restore_state.json"
+	// Read version file to get list of files
+	data, err := ioutil.ReadFile(versionFile)
+	if err != nil {
+		return fmt.Errorf("failed to read version file: %v", err)
+	}
+	
+	lines := strings.Split(string(data), "\r\n")
+	var currentFile string
+	var currentHash string
+	
+	for _, line := range lines {
+		if strings.HasPrefix(line, "FILE:") {
+			currentFile = strings.TrimPrefix(line, "FILE:")
+		} else if strings.HasPrefix(line, "HASH:") {
+			currentHash = strings.TrimPrefix(line, "HASH:")
+			
+			if currentFile != "" && currentHash != "" {
+				// Check if already copied
+				alreadyCopied := false
+				for _, copied := range state.CopiedFiles {
+					if copied == currentHash {
+						alreadyCopied = true
+						break
+					}
+				}
+				
+				if !alreadyCopied {
+					// Copy backup file to staging area
+					backupFilePath := state.BackupDir + "\\files\\" + currentHash[:2] + "\\" + currentHash
+					stageFilePath := state.StageDir + "\\" + currentHash
+					
+					fmt.Printf("Copying: %s\n", currentFile)
+					
+					// Simple file copy (backup files are already compressed/encrypted)
+					in, err := os.Open(backupFilePath)
+					if err != nil {
+						fmt.Printf("Warning: Could not open backup file %s: %v\n", backupFilePath, err)
+						continue
+					}
+					
+					out, err := os.Create(stageFilePath)
+					if err != nil {
+						in.Close()
+						fmt.Printf("Warning: Could not create stage file %s: %v\n", stageFilePath, err)
+						continue
+					}
+					
+					_, err = io.Copy(out, in)
+					in.Close()
+					out.Close()
+					
+					if err != nil {
+						fmt.Printf("Warning: Could not copy file %s: %v\n", currentFile, err)
+						continue
+					}
+					
+					state.CopiedFiles = append(state.CopiedFiles, currentHash)
+					
+					// Save state after each file for crash recovery
+					if err := saveRestoreState(stateFile, *state); err != nil {
+						fmt.Printf("Warning: Could not save restore state: %v\n", err)
+					}
+				}
+				
+				currentFile = ""
+				currentHash = ""
+			}
+		}
+	}
+	
+	return nil
+}
+
+// extractBackupFiles extracts files from staging area to final location
+func extractBackupFiles(state *RestoreState, encryptionKey []byte) error {
+	stateFile := state.RestoreDir + "\\restore_state.json"
+	// Read version file to get list of files and their original paths
+	versionFile := state.BackupDir + "\\version\\" + strconv.Itoa(state.Version)
+	data, err := ioutil.ReadFile(versionFile)
+	if err != nil {
+		return fmt.Errorf("failed to read version file: %v", err)
+	}
+	
+	lines := strings.Split(string(data), "\r\n")
+	var currentFile string
+	var currentHash string
+	
+	for _, line := range lines {
+		if strings.HasPrefix(line, "FILE:") {
+			currentFile = strings.TrimPrefix(line, "FILE:")
+		} else if strings.HasPrefix(line, "HASH:") {
+			currentHash = strings.TrimPrefix(line, "HASH:")
+			
+			if currentFile != "" && currentHash != "" {
+				// Check if already extracted
+				alreadyExtracted := false
+				for _, extracted := range state.ExtractedFiles {
+					if extracted == currentFile {
+						alreadyExtracted = true
+						break
+					}
+				}
+				
+				if !alreadyExtracted {
+					// Extract file from staging area to restore directory
+					stageFilePath := state.StageDir + "\\" + currentHash
+					
+					// Calculate relative path from original file path
+					relativePath := filepath.Base(currentFile)
+					if strings.Contains(currentFile, "\\subdir\\") {
+						// Handle subdirectory structure
+						parts := strings.Split(currentFile, "\\")
+						if len(parts) >= 2 {
+							// Take last two parts for subdir/filename
+							relativePath = filepath.Join(parts[len(parts)-2], parts[len(parts)-1])
+						}
+					}
+					
+					// Create target path within restore directory
+					targetPath := filepath.Join(state.RestoreDir, relativePath)
+					
+					fmt.Printf("Extracting: %s -> %s\n", currentFile, targetPath)
+					
+					// Create directory structure if needed
+					dirPath := filepath.Dir(targetPath)
+					if err := os.MkdirAll(dirPath, 0755); err != nil {
+						fmt.Printf("Warning: Could not create directory %s: %v\n", dirPath, err)
+						continue
+					}
+					
+					// Extract and decrypt file
+					err := ExtractGZipAndDecrypt(stageFilePath, targetPath, encryptionKey)
+					if err != nil {
+						fmt.Printf("Warning: Could not extract file %s: %v\n", currentFile, err)
+						continue
+					}
+					
+					state.ExtractedFiles = append(state.ExtractedFiles, currentFile)
+					
+					// Save state after each file for crash recovery
+					if err := saveRestoreState(stateFile, *state); err != nil {
+						fmt.Printf("Warning: Could not save restore state: %v\n", err)
+					}
+				}
+				
+				currentFile = ""
+				currentHash = ""
+			}
+		}
+	}
+	
 	return nil
 }

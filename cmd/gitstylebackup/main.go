@@ -10,7 +10,11 @@ import (
 	"github.com/bvandorf/gitstylebackup/pkg/gitstylebackup"
 )
 
+const Version = "2.0.0"
+
 var usageStr = `
+Gitstyle Backup v` + Version + ` - Enhanced backup tool with encryption and resumable restore
+
 Backup Options:
 -b, --backup                Use to backup using config file
 -t, --trim <version>        Use to trim backup directory to version's specified
@@ -18,8 +22,14 @@ Backup Options:
 -v, --verify <version>      Use to verify files in backup directory current version is 0 
 -c, --config <file>         Use to specify the config file used (default: config.txt)
     --exampleconfig <file>  Use to make an example config file
+    --version               Show version information
     --fix                   Use to fix interrupted backup or trim
     --fixinuse              Use to remove inuse flag from backup
+
+Restore Options:
+-r, --restore <version> <dir>  Use to restore backup version to specified directory
+                              Supports resumable two-stage process with state file
+                              Default: in-place restore, use restoreStageDir in config for staging
 
 Common Options:
 -h, --help                  Show this help
@@ -29,6 +39,8 @@ Notes:
 case is important when defining paths in the config file
 priority in config file (1-5): 1=lowest CPU usage, 5=highest CPU usage, 3=default
 the executable directory and backup directory are automatically excluded from backup
+encryption: use encryptPassword or encryptKeyFile in config for optional encryption
+restore staging: use restoreStageDir in config to stage on different drive before restore
 
 Exit Codes:
      0 = Clean
@@ -87,6 +99,11 @@ func main() {
 	flag.StringVar(&verifyVersionArg, "v", "", "")
 	flag.StringVar(&verifyVersionArg, "verify", "", "")
 
+	var runRestore bool
+	var restoreVersionArg = ""
+	flag.StringVar(&restoreVersionArg, "r", "", "")
+	flag.StringVar(&restoreVersionArg, "restore", "", "")
+
 	flag.Usage = usage
 	flag.Parse()
 
@@ -98,12 +115,17 @@ func main() {
 		runVerify = true
 	}
 
+	if restoreVersionArg != "" {
+		runRestore = true
+	}
+
 	if showHelp {
 		usage()
 	}
 
 	if showVersion {
-		fmt.Println("Version 1.3")
+		fmt.Printf("Gitstyle Backup v%s\n", Version)
+		fmt.Println("Enhanced backup tool with encryption and resumable restore")
 		os.Exit(-1)
 	}
 
@@ -123,6 +145,9 @@ func main() {
 	if runVerify {
 		iCheckArgs++
 	}
+	if runRestore {
+		iCheckArgs++
+	}
 	if exampleConfig != "" {
 		iCheckArgs++
 	}
@@ -140,6 +165,11 @@ func main() {
 			Include:   []string{"C:\\Users", "C:\\ProgramData"},
 			Exclude:   []string{"C:\\Users\\Default"},
 			Priority:  "3", // Medium priority (default)
+			// Optional encryption (uncomment one of these):
+			// EncryptPassword: "your-password-here",
+			// EncryptKeyFile: "C:\\path\\to\\keyfile.key",
+			// Optional restore staging directory:
+			// RestoreStageDir: "D:\\temp\\restore_stage",
 		}
 
 		if err := gitstylebackup.WriteConfig(exampleConfig, eConfig); err != nil {
@@ -214,6 +244,22 @@ func main() {
 	if runVerify {
 		if err := gitstylebackup.Verify(cfg, verifyVersionArg); err != nil {
 			fmt.Printf("Error during verify: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	if runRestore {
+		// Parse restore arguments: version and directory
+		args := flag.Args()
+		if len(args) < 1 {
+			fmt.Println("Error: Restore requires a target directory")
+			fmt.Println("Usage: -r <version> <directory>")
+			os.Exit(1)
+		}
+		
+		restoreDir := args[0]
+		if err := gitstylebackup.Restore(cfg, restoreVersionArg, restoreDir); err != nil {
+			fmt.Printf("Error during restore: %v\n", err)
 			os.Exit(1)
 		}
 	}
