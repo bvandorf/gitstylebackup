@@ -1332,26 +1332,7 @@ type RestoreState struct {
 	LastUpdate     string   `json:"lastUpdate"`
 }
 
-// saveRestoreState saves the restore state to a file
-func saveRestoreState(stateFile string, state RestoreState) error {
-	state.LastUpdate = time.Now().Format(timeFormat)
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return ioutil.WriteFile(stateFile, data, 0644)
-}
 
-// loadRestoreState loads the restore state from a file
-func loadRestoreState(stateFile string) (RestoreState, error) {
-	var state RestoreState
-	data, err := ioutil.ReadFile(stateFile)
-	if err != nil {
-		return state, err
-	}
-	err = json.Unmarshal(data, &state)
-	return state, err
-}
 
 // ExtractGZipAndDecrypt extracts and optionally decrypts a file
 func ExtractGZipAndDecrypt(src, dst string, encryptionKey []byte) error {
